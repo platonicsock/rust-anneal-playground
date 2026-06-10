@@ -67,18 +67,20 @@ const initialState: string = [
   '}',
 ].join('\n');
 
+const doAddCrateType = (code: string, crate_type: string): string =>
+  `#![crate_type = "${crate_type}"]\n${code}`;
+
 const slice = createSlice({
   name: 'code',
-  initialState,
+  initialState: HELLO_WORLD,
   reducers: {
     editCode: (_state, action: PayloadAction<string>) => action.payload,
 
-    addMainFunction: (state) => `${state}\n\n${initialState}`,
+    addMainFunction: (state) => `${state}\n\n${HELLO_WORLD}`,
 
     addImport: (state, action: PayloadAction<string>) => action.payload + state,
 
-    addCrateType: (state, action: PayloadAction<string>) =>
-      `#![crate_type = "${action.payload}"]\n${state}`,
+    addCrateType: (state, action: PayloadAction<string>) => doAddCrateType(state, action.payload),
 
     enableFeatureGate: (state, action: PayloadAction<string>) =>
       `#![feature(${action.payload})]\n${state}`,
