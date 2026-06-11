@@ -30,7 +30,7 @@ RUN /playground/attach_notice.sh /playground/security_notice.txt /etc/passwd && 
 
 USER playground
 ENV USER=playground
-ENV PATH=/playground/.cargo/bin:$PATH
+ENV PATH=/playground/.cargo/bin:/playground/.elan/bin:$PATH
 WORKDIR /playground
 
 # Ensure that we are using the latest stable version of rustup and the
@@ -108,20 +108,30 @@ RUN if [ "${channel}" = 'nightly' ]; then cargo miri setup; cargo miri run; fi
 RUN cargo install --locked cargo-anneal --version 0.1.0-alpha.23
 RUN cargo anneal setup
 RUN <<'EOF'
-cat > src/main.rs <<'RS'
-fn main() {}
+set -eu
+mkdir -p /tmp/anneal-warmup/src
 
-/// ```anneal
-/// isValid self := True
+cat > /tmp/anneal-warmup/Cargo.toml <<'TOML'
+[package]
+name = "anneal-warmup"
+version = "0.0.0"
+edition = "2021"
+TOML
+
+cat > /tmp/anneal-warmup/src/main.rs <<'RS'
+/// ```anneal, unsafe(axiom)
 /// ```
-pub struct AnnealWarmup {
-    pub value: u8,
+pub unsafe fn anneal_warmup_identity(x: u32) -> u32 {
+    x
 }
-RS
-cargo anneal verify --unsound-allow-is-valid
-EOF
-RUN rm src/*.rs
 
+fn main() {}
+RS
+
+cd /tmp/anneal-warmup
+cargo anneal verify --unsound-allow-is-valid
+rm -rf /tmp/anneal-warmup
+EOF
 COPY --from=build-orchestrator /playground/.cargo/bin/worker /playground/.cargo/bin/worker
 COPY --from=wasm-tools /playground/.cargo/bin/wasm-tools /playground/.cargo/bin
 COPY --chown=playground cargo-wasm /playground/.cargo/bin
