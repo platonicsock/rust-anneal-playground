@@ -404,8 +404,12 @@ impl LowerRequest for ExecuteRequest {
     fn delete_files(&self) -> impl Iterator<Item = DeleteFileRequest> {
         let files = match self.execution_tool {
             ExecutionTool::AnnealVerify => vec![
-                DeleteFileRequest::new(ANNEAL_MAIN_RS),
-                DeleteFileRequest::new(ANNEAL_CARGO_TOML),
+                DeleteFileRequest {
+                    path: ANNEAL_MAIN_RS.to_owned(),
+                },
+                DeleteFileRequest {
+                    path: ANNEAL_CARGO_TOML.to_owned(),
+                },
             ],
             ExecutionTool::Cargo => vec![delete_previous_primary_file_request(self.crate_type)],
         };
@@ -899,6 +903,7 @@ fn delete_previous_primary_file_request(crate_type: CrateType) -> DeleteFileRequ
         path: crate_type.other_path().to_owned(),
     }
 }
+
 
 #[derive(Debug)]
 enum DemultiplexCommand {
