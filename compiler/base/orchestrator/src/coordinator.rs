@@ -434,7 +434,7 @@ impl LowerRequest for ExecuteRequest {
 }
 
     fn execute_cargo_request(&self) -> ExecuteCommandRequest {
-        let args = match self.execution_tool {
+        let (args, cwd) = match self.execution_tool {
             ExecutionTool::Cargo => {
                 let cmd = match (self.tests, self.crate_type.is_binary()) {
                     (true, _) => "test",
@@ -448,10 +448,13 @@ impl LowerRequest for ExecuteRequest {
                     args.push("--release");
                 }
 
-                args
+                (args, None)
             }
 
-            ExecutionTool::AnnealVerify => vec!["anneal", "verify", "--unsound-allow-is-valid"],
+            ExecutionTool::AnnealVerify => (
+                vec!["anneal", "verify", "--unsound-allow-is-valid"],
+                Some(ANNEAL_WORKSPACE_DIR.to_owned()),
+            ),
         };
 
         let mut envs = HashMap::new();
@@ -463,7 +466,7 @@ impl LowerRequest for ExecuteRequest {
             cmd: "cargo".to_owned(),
             args: args.into_iter().map(|s| s.to_owned()).collect(),
             envs,
-            cwd: None,
+            cwd,
         }
     }
 }
