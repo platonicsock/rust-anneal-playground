@@ -13,6 +13,7 @@ import {
   PairCharacters,
   PrimaryAction,
   PrimaryActionAuto,
+  PrimaryActionCore,
   ProcessAssembly,
   Theme,
 } from '../types';
@@ -55,7 +56,7 @@ const initialState: State = {
   assemblyFlavor: AssemblyFlavor.Att,
   demangleAssembly: DemangleAssembly.Demangle,
   processAssembly: ProcessAssembly.Filter,
-  primaryAction: PrimaryActionAuto.Auto,
+  primaryAction: PrimaryActionCore.Anneal,
   channel: Channel.Stable,
   mode: Mode.Debug,
   edition: Edition.Rust2024,
