@@ -389,17 +389,56 @@ pub struct ExecuteRequest {
     pub execution_tool: ExecutionTool,
 }
 
+const ANNEAL_WORKSPACE_DIR: &str = "anneal-workspace";
+const ANNEAL_MAIN_RS: &str = "anneal-workspace/src/main.rs";
+const ANNEAL_CARGO_TOML: &str = "anneal-workspace/Cargo.toml";
+const ANNEAL_CARGO_TOML_CONTENT: &str = r#"[package]
+name = "anneal-submission"
+version = "0.0.0"
+edition = "2021"
+"#;
+
 impl LowerRequest for ExecuteRequest {
+    // Changed to support Anneal Verify, which will keep the Cargo.toml and src/main.rs around and 
+    // just overwrite them instead of deleting and rewriting the entire playground every time.
     fn delete_files(&self) -> impl Iterator<Item = DeleteFileRequest> {
-        [delete_previous_primary_file_request(self.crate_type)].into_iter()
+        let files = match self.execution_tool {
+            ExecutionTool::AnnealVerify => vec![
+                DeleteFileRequest {
+                    path: ANNEAL_MAIN_RS.to_owned(),
+                },
+                DeleteFileRequest {
+                    path: ANNEAL_CARGO_TOML.to_owned(),
+                },
+            ],
+            ExecutionTool::Cargo => vec![delete_previous_primary_file_request(self.crate_type)],
+        };
+
+        files.into_iter()
     }
 
+    // Instead of writing all the playground files from scratch, 
+    // just overwrite the existing ones in the Anneal Verify case.
     fn write_files(&self) -> impl Iterator<Item = WriteFileRequest> {
-        [write_primary_file_request(self.crate_type, &self.code)].into_iter()
-    }
+    let files = match self.execution_tool {
+        ExecutionTool::AnnealVerify => vec![
+            WriteFileRequest {
+                path: ANNEAL_CARGO_TOML.to_owned(),
+                content: ANNEAL_CARGO_TOML_CONTENT.as_bytes().to_vec(),
+            },
+            WriteFileRequest {
+                path: ANNEAL_MAIN_RS.to_owned(),
+                content: self.code.clone().into_bytes(),
+            },
+        ],
+        ExecutionTool::Cargo => vec![write_primary_file_request(self.crate_type, &self.code)],
+    };
+
+    files.into_iter()
+}
 
     fn execute_cargo_request(&self) -> ExecuteCommandRequest {
-        let args = match self.execution_tool {
+        let (args, cwd) = match self.execution_tool {
             ExecutionTool::Cargo => {
                 let cmd = match (self.tests, self.crate_type.is_binary()) {
                     (true, _) => "test",
@@ -413,10 +452,13 @@ impl LowerRequest for ExecuteRequest {
                     args.push("--release");
                 }
 
-                args
+                (args, None)
             }
 
-            ExecutionTool::AnnealVerify => vec!["anneal", "verify", "--unsound-allow-is-valid"],
+            ExecutionTool::AnnealVerify => (
+                vec!["anneal", "verify", "--unsound-allow-is-valid"],
+                Some(ANNEAL_WORKSPACE_DIR.to_owned()),
+            ),
         };
 
         let mut envs = HashMap::new();
@@ -428,7 +470,7 @@ impl LowerRequest for ExecuteRequest {
             cmd: "cargo".to_owned(),
             args: args.into_iter().map(|s| s.to_owned()).collect(),
             envs,
-            cwd: None,
+            cwd,
         }
     }
 }
@@ -861,6 +903,7 @@ fn delete_previous_primary_file_request(crate_type: CrateType) -> DeleteFileRequ
         path: crate_type.other_path().to_owned(),
     }
 }
+
 
 #[derive(Debug)]
 enum DemultiplexCommand {
