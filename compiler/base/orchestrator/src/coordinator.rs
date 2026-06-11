@@ -389,9 +389,25 @@ pub struct ExecuteRequest {
     pub execution_tool: ExecutionTool,
 }
 
+const ANNEAL_WORKSPACE_DIR: &str = "anneal-workspace";
+const ANNEAL_MAIN_RS: &str = "anneal-workspace/src/main.rs";
+const ANNEAL_CARGO_TOML: &str = "anneal-workspace/Cargo.toml";
+const ANNEAL_CARGO_TOML_CONTENT: &str = r#"[package]
+name = "anneal-submission"
+version = "0.0.0"
+edition = "2021"
+"#;
+
 impl LowerRequest for ExecuteRequest {
+    // Changed to support Anneal Verify, which will keep the Cargo.toml and src/main.rs around and 
+    // just overwrite them instead of deleting and rewriting the entire playground every time.
     fn delete_files(&self) -> impl Iterator<Item = DeleteFileRequest> {
-        [delete_previous_primary_file_request(self.crate_type)].into_iter()
+        let files = match self.execution_tool {
+            ExecutionTool::AnnealVerify => Vec::new(),
+            ExecutionTool::Cargo => vec![delete_previous_primary_file_request(self.crate_type)],
+        };
+
+        files.into_iter()
     }
 
     fn write_files(&self) -> impl Iterator<Item = WriteFileRequest> {
