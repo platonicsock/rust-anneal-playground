@@ -403,16 +403,35 @@ impl LowerRequest for ExecuteRequest {
     // just overwrite them instead of deleting and rewriting the entire playground every time.
     fn delete_files(&self) -> impl Iterator<Item = DeleteFileRequest> {
         let files = match self.execution_tool {
-            ExecutionTool::AnnealVerify => Vec::new(),
+            ExecutionTool::AnnealVerify => vec![
+                DeleteFileRequest::new(ANNEAL_MAIN_RS),
+                DeleteFileRequest::new(ANNEAL_CARGO_TOML),
+            ],
             ExecutionTool::Cargo => vec![delete_previous_primary_file_request(self.crate_type)],
         };
 
         files.into_iter()
     }
 
+    // Instead of writing all the playground files from scratch, 
+    // just overwrite the existing ones in the Anneal Verify case.
     fn write_files(&self) -> impl Iterator<Item = WriteFileRequest> {
-        [write_primary_file_request(self.crate_type, &self.code)].into_iter()
-    }
+    let files = match self.execution_tool {
+        ExecutionTool::AnnealVerify => vec![
+            WriteFileRequest {
+                path: ANNEAL_CARGO_TOML.to_owned(),
+                content: ANNEAL_CARGO_TOML_CONTENT.as_bytes().to_vec(),
+            },
+            WriteFileRequest {
+                path: ANNEAL_MAIN_RS.to_owned(),
+                content: self.code.clone().into_bytes(),
+            },
+        ],
+        ExecutionTool::Cargo => vec![write_primary_file_request(self.crate_type, &self.code)],
+    };
+
+    files.into_iter()
+}
 
     fn execute_cargo_request(&self) -> ExecuteCommandRequest {
         let args = match self.execution_tool {
