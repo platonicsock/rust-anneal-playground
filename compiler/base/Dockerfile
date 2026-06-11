@@ -119,14 +119,13 @@ edition = "2021"
 TOML
 
 cat > /tmp/anneal-warmup/src/main.rs <<'RS'
-fn main() {}
-
-/// ```anneal
-/// isValid self := True
+/// ```anneal, unsafe(axiom)
 /// ```
-pub struct AnnealWarmup {
-    pub value: u8,
+pub unsafe fn anneal_warmup_identity(x: u32) -> u32 {
+    x
 }
+
+fn main() {}
 RS
 
 cd /tmp/anneal-warmup
