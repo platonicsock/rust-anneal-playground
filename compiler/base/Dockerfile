@@ -109,16 +109,16 @@ RUN cargo install --locked cargo-anneal --version 0.1.0-alpha.23
 RUN cargo anneal setup
 RUN <<'EOF'
 set -eu
-mkdir -p /tmp/anneal-warmup/src
+mkdir -p /playground/anneal-workspace/src
 
-cat > /tmp/anneal-warmup/Cargo.toml <<'TOML'
+cat > /playground/anneal-workspace/Cargo.toml <<'TOML'
 [package]
 name = "anneal-warmup"
 version = "0.0.0"
 edition = "2021"
 TOML
 
-cat > /tmp/anneal-warmup/src/main.rs <<'RS'
+cat > /playground/anneal-workspace/src/main.rs  <<'RS'
 /// ```anneal, unsafe(axiom)
 /// ```
 pub unsafe fn anneal_warmup_identity(x: u32) -> u32 {
@@ -128,9 +128,9 @@ pub unsafe fn anneal_warmup_identity(x: u32) -> u32 {
 fn main() {}
 RS
 
-cd /tmp/anneal-warmup
-cargo anneal verify --unsound-allow-is-valid
-rm -rf /tmp/anneal-warmup
+cd /playground/anneal-workspace
+
+CARGO_BUILD_JOBS=2 cargo anneal verify --unsound-allow-is-valid
 EOF
 COPY --from=build-orchestrator /playground/.cargo/bin/worker /playground/.cargo/bin/worker
 COPY --from=wasm-tools /playground/.cargo/bin/wasm-tools /playground/.cargo/bin
