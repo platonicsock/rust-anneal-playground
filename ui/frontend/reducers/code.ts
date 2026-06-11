@@ -72,11 +72,11 @@ const doAddCrateType = (code: string, crate_type: string): string =>
 
 const slice = createSlice({
   name: 'code',
-  initialState: HELLO_WORLD,
+  initialState,
   reducers: {
     editCode: (_state, action: PayloadAction<string>) => action.payload,
 
-    addMainFunction: (state) => `${state}\n\n${HELLO_WORLD}`,
+    addMainFunction: (state) => `${state}\n\nfn main() {}`,
 
     addImport: (state, action: PayloadAction<string>) => action.payload + state,
 
