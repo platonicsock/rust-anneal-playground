@@ -373,7 +373,7 @@ pub enum LibraryType {
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub enum ExecutionTool {
-    Cargo, 
+    Cargo,
     AnnealVerify,
 }
 
@@ -392,50 +392,46 @@ pub struct ExecuteRequest {
 const ANNEAL_WORKSPACE_DIR: &str = "anneal-workspace";
 const ANNEAL_MAIN_RS: &str = "anneal-workspace/src/main.rs";
 const ANNEAL_CARGO_TOML: &str = "anneal-workspace/Cargo.toml";
+const ANNEAL_CARGO_TARGET_DIR: &str = "/playground/anneal-workspace/target";
 const ANNEAL_CARGO_TOML_CONTENT: &str = r#"[package]
 name = "anneal-submission"
 version = "0.0.0"
 edition = "2021"
+
+[workspace]
 "#;
 
 impl LowerRequest for ExecuteRequest {
-    // Changed to support Anneal Verify, which will keep the Cargo.toml and src/main.rs around and 
+    // Changed to support Anneal Verify, which will keep the Cargo.toml and src/main.rs around and
     // just overwrite them instead of deleting and rewriting the entire playground every time.
     fn delete_files(&self) -> impl Iterator<Item = DeleteFileRequest> {
         let files = match self.execution_tool {
-            ExecutionTool::AnnealVerify => vec![
-                DeleteFileRequest {
-                    path: ANNEAL_MAIN_RS.to_owned(),
-                },
-                DeleteFileRequest {
-                    path: ANNEAL_CARGO_TOML.to_owned(),
-                },
-            ],
+            ExecutionTool::AnnealVerify => vec![],
             ExecutionTool::Cargo => vec![delete_previous_primary_file_request(self.crate_type)],
         };
 
         files.into_iter()
     }
 
-    // Instead of writing all the playground files from scratch, 
+    // Instead of writing all the playground files from scratch,
     // just overwrite the existing ones in the Anneal Verify case.
     fn write_files(&self) -> impl Iterator<Item = WriteFileRequest> {
-    let files = match self.execution_tool {
-        ExecutionTool::AnnealVerify => vec![
-            WriteFileRequest {
-                path: ANNEAL_CARGO_TOML.to_owned(),
-                content: ANNEAL_CARGO_TOML_CONTENT.as_bytes().to_vec(),
-            },
-            WriteFileRequest {
-                path: ANNEAL_MAIN_RS.to_owned(),
-                content: self.code.clone().into_bytes(),
-            },
-        ],
-        ExecutionTool::Cargo => vec![write_primary_file_request(self.crate_type, &self.code)],
-    };
+        let files = match self.execution_tool {
+            ExecutionTool::AnnealVerify => vec![
+                WriteFileRequest {
+                    path: ANNEAL_CARGO_TOML.to_owned(),
+                    content: ANNEAL_CARGO_TOML_CONTENT.as_bytes().to_vec(),
+                },
+                WriteFileRequest {
+                    path: ANNEAL_MAIN_RS.to_owned(),
+                    content: self.code.clone().into_bytes(),
+                },
+            ],
+            ExecutionTool::Cargo => vec![write_primary_file_request(self.crate_type, &self.code)],
+        };
 
-    files.into_iter()
-}
+        files.into_iter()
+    }
 
     fn execute_cargo_request(&self) -> ExecuteCommandRequest {
         let (args, cwd) = match self.execution_tool {
@@ -465,6 +461,9 @@ impl LowerRequest for ExecuteRequest {
         if self.backtrace {
             envs.extend(kvs!("RUST_BACKTRACE" => "1"));
         }
+        if self.execution_tool == ExecutionTool::AnnealVerify {
+            envs.extend(kvs!("CARGO_TARGET_DIR" => ANNEAL_CARGO_TARGET_DIR));
+        }
 
         ExecuteCommandRequest {
             cmd: "cargo".to_owned(),
@@ -473,9 +472,20 @@ impl LowerRequest for ExecuteRequest {
             cwd,
         }
     }
+
+    fn instrumentation_kind(&self) -> Option<&'static str> {
+        match self.execution_tool {
+            ExecutionTool::AnnealVerify => Some("anneal_verify"),
+            ExecutionTool::Cargo => None,
+        }
+    }
 }
 
 impl CargoTomlModifier for ExecuteRequest {
+    fn should_modify_cargo_toml(&self) -> bool {
+        self.execution_tool == ExecutionTool::Cargo
+    }
+
     fn modify_cargo_toml(&self, mut cargo_toml: toml::Value) -> toml::Value {
         cargo_toml = modify_cargo_toml::set_edition(cargo_toml, self.edition.to_cargo_toml_key());
 
@@ -904,7 +914,6 @@ fn delete_previous_primary_file_request(crate_type: CrateType) -> DeleteFileRequ
     }
 }
 
-
 #[derive(Debug)]
 enum DemultiplexCommand {
     Listen(JobId, mpsc::Sender<WorkerMessage>),
@@ -1271,9 +1280,22 @@ impl Container {
         backend: &impl Backend,
     ) -> Result<Self> {
         let permit = limits.next_container().await.context(AcquirePermitSnafu)?;
+        let container_start = time::Instant::now();
+        let container_image = channel.to_container_name();
+        info!(
+            ?channel,
+            container = %container_image,
+            "starting compiler container"
+        );
 
         let (mut child, kill_child, stdin, stdout) =
             backend.run_worker_in_background(channel, &permit)?;
+        info!(
+            ?channel,
+            container = %container_image,
+            spawn_ms = container_start.elapsed().as_millis(),
+            "compiler container process spawned"
+        );
         let IoQueue {
             mut tasks,
             to_worker_tx,
@@ -1321,9 +1343,17 @@ impl Container {
             id: Default::default(),
         };
 
+        let manifest_start = time::Instant::now();
         let modify_cargo_toml = ModifyCargoToml::new(commander.clone())
             .await
             .context(CouldNotLoadCargoTomlSnafu)?;
+        info!(
+            ?channel,
+            container = %container_image,
+            manifest_ms = manifest_start.elapsed().as_millis(),
+            ready_ms = container_start.elapsed().as_millis(),
+            "compiler container ready"
+        );
 
         Ok(Container {
             permit,
@@ -1416,7 +1446,7 @@ impl Container {
             stdout_rx,
             stderr_rx,
             status_rx,
-        } = self.spawn_cargo_task(token, cmd).await?;
+        } = self.spawn_cargo_task(token, cmd, None).await?;
 
         drop(stdin_tx);
         drop(status_rx);
@@ -1837,6 +1867,12 @@ impl Container {
     ) -> Result<SpawnCargo, DoRequestError> {
         use do_request_error::*;
 
+        let instrumentation_kind = request.instrumentation_kind();
+        let request_start = time::Instant::now();
+        if let Some(kind) = instrumentation_kind {
+            info!(kind, "request received");
+        }
+
         let delete_files = request
             .delete_files()
             .map(|req| async {
@@ -1862,25 +1898,63 @@ impl Container {
             .try_collect::<()>();
 
         let modify_cargo_toml = async {
-            self.modify_cargo_toml
-                .modify_for(&request)
-                .await
-                .context(CouldNotModifyCargoTomlSnafu)
+            if request.should_modify_cargo_toml() {
+                self.modify_cargo_toml
+                    .modify_for(&request)
+                    .await
+                    .context(CouldNotModifyCargoTomlSnafu)
+            } else {
+                Ok(())
+            }
         };
 
+        let prepare_start = time::Instant::now();
         let (d, w, m) = try_join!(delete_files, write_files, modify_cargo_toml)?;
         let _: [(); 3] = [d, w, m];
+        if let Some(kind) = instrumentation_kind {
+            info!(
+                kind,
+                prepare_ms = prepare_start.elapsed().as_millis(),
+                total_ms = request_start.elapsed().as_millis(),
+                "request files prepared"
+            );
+        }
 
         let execute_cargo = request.execute_cargo_request();
-        self.spawn_cargo_task(token, execute_cargo)
+        if let Some(kind) = instrumentation_kind {
+            info!(
+                kind,
+                cmd = %execute_cargo.cmd,
+                args = ?execute_cargo.args,
+                cwd = ?execute_cargo.cwd,
+                envs = ?execute_cargo.envs,
+                total_ms = request_start.elapsed().as_millis(),
+                "spawning command"
+            );
+        }
+
+        let spawn_start = time::Instant::now();
+        let cargo = self
+            .spawn_cargo_task(token, execute_cargo, instrumentation_kind)
             .await
-            .context(CouldNotStartCargoSnafu)
+            .context(CouldNotStartCargoSnafu)?;
+        if let Some(kind) = instrumentation_kind {
+            info!(
+                kind,
+                spawn_ms = spawn_start.elapsed().as_millis(),
+                total_ms = request_start.elapsed().as_millis(),
+                "command dispatched"
+            );
+        }
+
+        Ok(cargo)
     }
 
     async fn spawn_cargo_task(
         &self,
         token: CancellationToken,
         execute_cargo: ExecuteCommandRequest,
+        instrumentation_kind: Option<&'static str>,
     ) -> Result<SpawnCargo, SpawnCargoError> {
         use spawn_cargo_error::*;
 
@@ -1906,6 +1980,7 @@ impl Container {
         let token = token.child_token();
         let drop_token = token.clone();
 
+        let command_start = time::Instant::now();
         let task = tokio::spawn({
             async move {
                 let mut cancelled = pin!(token.cancelled().fuse());
@@ -1955,6 +2030,15 @@ impl Container {
 
                             match container_msg {
                                 WorkerMessage::ExecuteCommand(resp) => {
+                                    if let Some(kind) = instrumentation_kind {
+                                        info!(
+                                            kind,
+                                            command_ms = command_start.elapsed().as_millis(),
+                                            success = resp.success,
+                                            exit_detail = %resp.exit_detail,
+                                            "command finished"
+                                        );
+                                    }
                                     return Ok(resp);
                                 }
 
@@ -2338,6 +2422,10 @@ trait LowerRequest {
     fn write_files(&self) -> impl Iterator<Item = WriteFileRequest>;
 
     fn execute_cargo_request(&self) -> ExecuteCommandRequest;
+
+    fn instrumentation_kind(&self) -> Option<&'static str> {
+        None
+    }
 }
 
 impl<S> LowerRequest for &S
@@ -2355,9 +2443,17 @@ where
     fn execute_cargo_request(&self) -> ExecuteCommandRequest {
         S::execute_cargo_request(self)
     }
+
+    fn instrumentation_kind(&self) -> Option<&'static str> {
+        S::instrumentation_kind(self)
+    }
 }
 
 trait CargoTomlModifier {
+    fn should_modify_cargo_toml(&self) -> bool {
+        true
+    }
+
     fn modify_cargo_toml(&self, cargo_toml: toml::Value) -> toml::Value;
 }
 
@@ -2365,6 +2461,10 @@ impl<C> CargoTomlModifier for &C
 where
     C: CargoTomlModifier,
 {
+    fn should_modify_cargo_toml(&self) -> bool {
+        C::should_modify_cargo_toml(self)
+    }
+
     fn modify_cargo_toml(&self, cargo_toml: toml::Value) -> toml::Value {
         C::modify_cargo_toml(self, cargo_toml)
     }

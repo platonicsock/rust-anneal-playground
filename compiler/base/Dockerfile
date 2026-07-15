@@ -113,9 +113,11 @@ mkdir -p /playground/anneal-workspace/src
 
 cat > /playground/anneal-workspace/Cargo.toml <<'TOML'
 [package]
-name = "anneal-warmup"
+name = "anneal-submission"
 version = "0.0.0"
 edition = "2021"
+
+[workspace]
 TOML
 
 cat > /playground/anneal-workspace/src/main.rs  <<'RS'

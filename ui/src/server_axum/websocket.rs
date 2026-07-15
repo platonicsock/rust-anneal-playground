@@ -711,8 +711,19 @@ async fn handle_execute(
     use CompletedOrAbandoned::*;
 
     let req = coordinator::ExecuteRequest::try_from(req).context(BadRequestSnafu)?;
+    let is_anneal_verify = req.execution_tool == coordinator::ExecutionTool::AnnealVerify;
+    if is_anneal_verify {
+        info!(
+            sequence_number = meta.sequence_number,
+            channel = ?req.channel,
+            mode = ?req.mode,
+            edition = ?req.edition,
+            "anneal verify websocket request received"
+        );
+    }
 
     let labels_core = req.labels_core();
+    let sequence_number = meta.sequence_number;
 
     let start = Instant::now();
     let v = handle_execute_inner(token, rx, tx, coordinator, req, meta).await;
@@ -725,6 +736,14 @@ async fn handle_execute(
     };
 
     record_metric(Endpoint::Execute, labels_core, outcome, elapsed);
+    if is_anneal_verify {
+        info!(
+            sequence_number,
+            elapsed_ms = elapsed.as_millis(),
+            outcome = ?outcome,
+            "anneal verify websocket request finished"
+        );
+    }
 
     v?;
     Ok(())
