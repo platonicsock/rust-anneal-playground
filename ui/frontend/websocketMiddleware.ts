@@ -159,10 +159,20 @@ export const websocketMiddleware =
     connect();
 
     return (next) => (action) => {
-      if (socket && socket.readyState == socket.OPEN && sendActionOnWebsocket(action)) {
-        const message = JSON.stringify(action);
-        socket.send(message);
-        resetTimeout();
+      if (sendActionOnWebsocket(action)) {
+        const type =
+          typeof action === 'object' && action && 'type' in action ? action.type : '<unknown>';
+
+        if (socket && socket.readyState == socket.OPEN) {
+          const message = JSON.stringify(action);
+          console.info('WebSocket request sent', type);
+          socket.send(message);
+          resetTimeout();
+        } else {
+          console.warn('WebSocket request dropped', type, {
+            readyState: socket?.readyState ?? '<no socket>',
+          });
+        }
       }
 
       next(action);

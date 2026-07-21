@@ -136,6 +136,17 @@ TMPDIR=/playground/anneal-workspace/tmp \
 TEMP=/playground/anneal-workspace/tmp \
 TMP=/playground/anneal-workspace/tmp \
 CARGO_BUILD_JOBS=2 cargo anneal verify --unsound-allow-is-valid
+
+# Keep reusable Cargo build artifacts, but do not bake Anneal's per-run Lean
+# workspace into the image. At runtime, cargo-anneal regenerates that workspace
+# and renames its old `.lake` directory into a fresh temporary tree; Docker
+# overlayfs can reject that rename when the old tree lives in a read-only image
+# layer with "Invalid cross-device link".
+find /playground/anneal-workspace/target/anneal \
+    -mindepth 1 \
+    -maxdepth 1 \
+    ! -name cargo_target \
+    -exec rm -rf {} +
 EOF
 COPY --from=build-orchestrator /playground/.cargo/bin/worker /playground/.cargo/bin/worker
 COPY --from=wasm-tools /playground/.cargo/bin/wasm-tools /playground/.cargo/bin

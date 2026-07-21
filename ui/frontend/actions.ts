@@ -69,7 +69,9 @@ const performCompileToCdylibWasmOnly = (): ThunkAction => (dispatch, getState) =
   }
   dispatch(performCompileToWasmOnly());
 };
-const performCargoAnnealOnly = (): ThunkAction => performCommonExecute('bin', false, 'anneal-verify');
+const performCargoAnnealOnly = (): ThunkAction => (dispatch) => {
+  dispatch(performCommonExecute('bin', false, 'anneal-verify'));
+};
 
 const PRIMARY_ACTIONS: { [index in PrimaryAction]: () => ThunkAction } = {
   [PrimaryActionCore.Asm]: performCompileToAssemblyOnly,
