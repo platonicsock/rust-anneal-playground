@@ -393,6 +393,8 @@ const ANNEAL_WORKSPACE_DIR: &str = "anneal-workspace";
 const ANNEAL_MAIN_RS: &str = "anneal-workspace/src/main.rs";
 const ANNEAL_CARGO_TOML: &str = "anneal-workspace/Cargo.toml";
 const ANNEAL_CARGO_TARGET_DIR: &str = "/playground/anneal-workspace/target";
+const ANNEAL_TMP_DIR: &str = "/playground/anneal-workspace/tmp";
+const ANNEAL_TMP_KEEP: &str = "anneal-workspace/tmp/.keep";
 const ANNEAL_CARGO_TOML_CONTENT: &str = r#"[package]
 name = "anneal-submission"
 version = "0.0.0"
@@ -425,6 +427,10 @@ impl LowerRequest for ExecuteRequest {
                 WriteFileRequest {
                     path: ANNEAL_MAIN_RS.to_owned(),
                     content: self.code.clone().into_bytes(),
+                },
+                WriteFileRequest {
+                    path: ANNEAL_TMP_KEEP.to_owned(),
+                    content: Vec::new(),
                 },
             ],
             ExecutionTool::Cargo => vec![write_primary_file_request(self.crate_type, &self.code)],
@@ -462,7 +468,16 @@ impl LowerRequest for ExecuteRequest {
             envs.extend(kvs!("RUST_BACKTRACE" => "1"));
         }
         if self.execution_tool == ExecutionTool::AnnealVerify {
-            envs.extend(kvs!("CARGO_TARGET_DIR" => ANNEAL_CARGO_TARGET_DIR));
+            envs.extend(kvs!(
+                "CARGO_TARGET_DIR" => ANNEAL_CARGO_TARGET_DIR,
+                "TMPDIR" => ANNEAL_TMP_DIR,
+                "TEMP" => ANNEAL_TMP_DIR,
+                "TMP" => ANNEAL_TMP_DIR,
+            ));
+
+            if let Ok(rust_log) = std::env::var("RUST_LOG") {
+                envs.insert("RUST_LOG".to_owned(), rust_log);
+            }
         }
 
         ExecuteCommandRequest {

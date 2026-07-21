@@ -109,7 +109,7 @@ RUN cargo install --locked cargo-anneal --version 0.1.0-alpha.24
 RUN cargo anneal setup
 RUN <<'EOF'
 set -eu
-mkdir -p /playground/anneal-workspace/src
+mkdir -p /playground/anneal-workspace/src /playground/anneal-workspace/tmp
 
 cat > /playground/anneal-workspace/Cargo.toml <<'TOML'
 [package]
@@ -132,6 +132,9 @@ RS
 
 cd /playground/anneal-workspace
 
+TMPDIR=/playground/anneal-workspace/tmp \
+TEMP=/playground/anneal-workspace/tmp \
+TMP=/playground/anneal-workspace/tmp \
 CARGO_BUILD_JOBS=2 cargo anneal verify --unsound-allow-is-valid
 EOF
 COPY --from=build-orchestrator /playground/.cargo/bin/worker /playground/.cargo/bin/worker

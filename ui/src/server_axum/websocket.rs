@@ -603,6 +603,15 @@ async fn handle_msg(
 ) {
     use WSMessageRequest::*;
 
+    let message_type = serde_json::from_str::<serde_json::Value>(txt)
+        .ok()
+        .and_then(|v| v.get("type").and_then(|t| t.as_str()).map(str::to_owned));
+    info!(
+        message_type = message_type.as_deref().unwrap_or("<unknown>"),
+        message_len = txt.len(),
+        "websocket message received"
+    );
+
     let msg = serde_json::from_str(txt).context(DeserializationSnafu);
 
     match msg {
@@ -680,6 +689,11 @@ async fn handle_msg(
         }
 
         Err(e) => {
+            warn!(
+                message_type = message_type.as_deref().unwrap_or("<unknown>"),
+                error = %e,
+                "websocket message parse failed"
+            );
             tx.send(Err((e, None))).await.ok(/* We don't care if the channel is closed */);
         }
     }
