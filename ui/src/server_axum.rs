@@ -58,6 +58,7 @@ const MAX_AGE_ONE_DAY: HeaderValue = HeaderValue::from_static("public, max-age=8
 const MAX_AGE_ONE_YEAR: HeaderValue = HeaderValue::from_static("public, max-age=31536000");
 
 const DOCKER_PROCESS_TIMEOUT_SOFT: Duration = Duration::from_secs(10);
+const ANNEAL_VERIFY_PROCESS_TIMEOUT_SOFT: Duration = Duration::from_secs(120);
 
 mod cache;
 mod websocket;
@@ -367,6 +368,12 @@ trait IsSuccess {
     fn is_success(&self) -> bool;
 }
 
+trait HasProcessTimeout {
+    fn process_timeout(&self) -> Duration {
+        DOCKER_PROCESS_TIMEOUT_SOFT
+    }
+}
+
 impl<T> IsSuccess for &T
 where
     T: IsSuccess,
@@ -391,9 +398,20 @@ impl IsSuccess for coordinator::CompileResponse {
     }
 }
 
+impl HasProcessTimeout for coordinator::CompileRequest {}
+
 impl IsSuccess for coordinator::ExecuteResponse {
     fn is_success(&self) -> bool {
         self.success
+    }
+}
+
+impl HasProcessTimeout for coordinator::ExecuteRequest {
+    fn process_timeout(&self) -> Duration {
+        match self.execution_tool {
+            coordinator::ExecutionTool::AnnealVerify => ANNEAL_VERIFY_PROCESS_TIMEOUT_SOFT,
+            coordinator::ExecutionTool::Cargo => DOCKER_PROCESS_TIMEOUT_SOFT,
+        }
     }
 }
 
@@ -403,11 +421,15 @@ impl IsSuccess for coordinator::FormatResponse {
     }
 }
 
+impl HasProcessTimeout for coordinator::FormatRequest {}
+
 impl IsSuccess for coordinator::ClippyResponse {
     fn is_success(&self) -> bool {
         self.success
     }
 }
+
+impl HasProcessTimeout for coordinator::ClippyRequest {}
 
 impl IsSuccess for coordinator::MiriResponse {
     fn is_success(&self) -> bool {
@@ -415,11 +437,15 @@ impl IsSuccess for coordinator::MiriResponse {
     }
 }
 
+impl HasProcessTimeout for coordinator::MiriRequest {}
+
 impl IsSuccess for coordinator::MacroExpansionResponse {
     fn is_success(&self) -> bool {
         self.success
     }
 }
+
+impl HasProcessTimeout for coordinator::MacroExpansionRequest {}
 
 impl Outcome {
     fn from_success(other: impl IsSuccess) -> Self {
@@ -440,7 +466,7 @@ where
     WebReq: TryInto<Req>,
     WebReq: HasEndpoint,
     Error: From<WebReq::Error>,
-    Req: HasLabelsCore,
+    Req: HasLabelsCore + HasProcessTimeout,
     Resp: Into<WebResp>,
     Resp: IsSuccess,
 {
@@ -450,11 +476,12 @@ where
         let req = req.try_into()?;
 
         let labels_core = req.labels_core();
+        let process_timeout = req.process_timeout();
 
         let start = Instant::now();
 
         let job = f(&coordinator, req);
-        let resp = tokio::time::timeout(DOCKER_PROCESS_TIMEOUT_SOFT, job).await;
+        let resp = tokio::time::timeout(process_timeout, job).await;
 
         let elapsed = start.elapsed();
 
