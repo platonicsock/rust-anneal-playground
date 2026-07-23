@@ -3026,23 +3026,30 @@ const DOCKER_ARCH: &str = docker_target_arch! {
     aarch64: "linux/arm64",
 };
 
+const DEFAULT_DOCKER_MEMORY: &str = "512m";
+const DEFAULT_DOCKER_MEMORY_SWAP: &str = "640m";
+
 fn basic_secure_docker_command() -> Command {
-    docker_command!(
+    let memory = std::env::var("PLAYGROUND_DOCKER_MEMORY")
+        .unwrap_or_else(|_| DEFAULT_DOCKER_MEMORY.to_owned());
+    let memory_swap = std::env::var("PLAYGROUND_DOCKER_MEMORY_SWAP")
+        .unwrap_or_else(|_| DEFAULT_DOCKER_MEMORY_SWAP.to_owned());
+
+    let mut command = docker_command!(
         "run",
         "--platform",
         DOCKER_ARCH,
         "--cap-drop=ALL",
         "--net",
         "none",
-        "--memory",
-        "512m",
-        "--memory-swap",
-        "640m",
-        "--pids-limit",
-        "512",
-        "--oom-score-adj",
-        "1000",
-    )
+    );
+    command
+        .arg("--memory")
+        .arg(memory)
+        .arg("--memory-swap")
+        .arg(memory_swap)
+        .args(["--pids-limit", "512", "--oom-score-adj", "1000"]);
+    command
 }
 
 #[derive(Default)]

@@ -105,7 +105,19 @@ RUN cargo build
 RUN cargo build --release
 RUN cargo clippy
 RUN if [ "${channel}" = 'nightly' ]; then cargo miri setup; cargo miri run; fi
-RUN cargo install --locked cargo-anneal --version 0.1.0-alpha.24 
+COPY --chown=playground cargo-anneal-alpha24-cache-manifest.patch /playground/tools/
+RUN <<'EOF'
+set -eu
+tmp="$(mktemp -d)"
+curl -L https://static.crates.io/crates/cargo-anneal/cargo-anneal-0.1.0-alpha.24.crate \
+    -o "$tmp/cargo-anneal.crate"
+mkdir "$tmp/src"
+tar -xzf "$tmp/cargo-anneal.crate" -C "$tmp/src" --strip-components=1
+cd "$tmp/src"
+git apply /playground/tools/cargo-anneal-alpha24-cache-manifest.patch
+cargo install --locked --path .
+rm -rf "$tmp"
+EOF
 RUN cargo anneal setup
 RUN <<'EOF'
 set -eu
