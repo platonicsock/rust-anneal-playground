@@ -1999,11 +1999,17 @@ impl Container {
         let task = tokio::spawn({
             async move {
                 let mut cancelled = pin!(token.cancelled().fuse());
+                let mut heartbeat = time::interval_at(
+                    command_start + Duration::from_secs(5),
+                    Duration::from_secs(5),
+                );
+                heartbeat.set_missed_tick_behavior(MissedTickBehavior::Delay);
                 let mut stdin_open = true;
 
                 loop {
                     enum Event {
                         Cancelled,
+                        Heartbeat,
                         Stdin(Option<String>),
                         FromWorker(WorkerMessage),
                     }
@@ -2013,6 +2019,8 @@ impl Container {
                         () = &mut cancelled => Cancelled,
 
                         stdin = stdin_rx.recv(), if stdin_open => Stdin(stdin),
+
+                        _ = heartbeat.tick(), if instrumentation_kind.is_some() => Heartbeat,
 
                         Some(container_msg) = from_worker_rx.recv() => FromWorker(container_msg),
 
@@ -2024,6 +2032,16 @@ impl Container {
                             let msg = CoordinatorMessage::Kill;
                             trace!(msg_name = msg.as_ref(), "processing");
                             to_worker_tx.send(msg).await.context(KillSnafu)?;
+                        }
+
+                        Heartbeat => {
+                            if let Some(kind) = instrumentation_kind {
+                                info!(
+                                    kind,
+                                    elapsed_ms = command_start.elapsed().as_millis(),
+                                    "command still running"
+                                );
+                            }
                         }
 
                         Stdin(stdin) => {
@@ -2058,10 +2076,26 @@ impl Container {
                                 }
 
                                 WorkerMessage::StdoutPacket(packet) => {
+                                    if let Some(kind) = instrumentation_kind {
+                                        log_instrumented_command_output(
+                                            kind,
+                                            "stdout",
+                                            &command_start,
+                                            &packet,
+                                        );
+                                    }
                                     stdout_tx.send(packet).await.ok(/* Receiver gone, that's OK */);
                                 }
 
                                 WorkerMessage::StderrPacket(packet) => {
+                                    if let Some(kind) = instrumentation_kind {
+                                        log_instrumented_command_output(
+                                            kind,
+                                            "stderr",
+                                            &command_start,
+                                            &packet,
+                                        );
+                                    }
                                     stderr_tx.send(packet).await.ok(/* Receiver gone, that's OK */);
                                 }
 
@@ -2115,6 +2149,41 @@ impl Container {
         drop(permit);
 
         r.context(ContainerTaskPanickedSnafu)?
+    }
+}
+
+fn log_instrumented_command_output(
+    kind: &'static str,
+    stream: &'static str,
+    command_start: &time::Instant,
+    packet: &str,
+) {
+    for line in packet.lines() {
+        let line = line.trim_end();
+        if line.is_empty() {
+            continue;
+        }
+
+        let output = truncate_log_output(line);
+        info!(
+            kind,
+            stream,
+            elapsed_ms = command_start.elapsed().as_millis(),
+            output = %output,
+            "command output"
+        );
+    }
+}
+
+fn truncate_log_output(line: &str) -> String {
+    const MAX_CHARS: usize = 2_000;
+
+    let mut chars = line.chars();
+    let output = chars.by_ref().take(MAX_CHARS).collect::<String>();
+    if chars.next().is_some() {
+        format!("{output}...")
+    } else {
+        output
     }
 }
 
