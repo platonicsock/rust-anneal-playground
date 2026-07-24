@@ -34,7 +34,10 @@ use std::{
     sync::{Arc, LazyLock},
     time::{Duration, Instant, UNIX_EPOCH},
 };
-use tokio::{select, sync::mpsc};
+use tokio::{
+    select,
+    sync::{mpsc, Mutex},
+};
 use tower_http::{
     cors::{self, CorsLayer},
     request_id::{MakeRequestUuid, PropagateRequestIdLayer, SetRequestIdLayer},
@@ -42,7 +45,7 @@ use tower_http::{
     set_header::SetResponseHeader,
     trace::TraceLayer,
 };
-use tracing::{error, error_span, field};
+use tracing::{error, error_span, field, info, warn};
 
 use crate::{env::PLAYGROUND_GITHUB_TOKEN, public_http_api as api};
 
@@ -66,16 +69,142 @@ mod websocket;
 #[derive(Debug, Clone)]
 struct Factory(Arc<CoordinatorFactory>);
 
+#[derive(Clone)]
+pub(crate) struct AnnealPrewarm {
+    coordinator: Arc<Mutex<Option<coordinator::Coordinator<DockerBackend>>>>,
+    enabled: bool,
+}
+
+impl AnnealPrewarm {
+    fn new(enabled: bool) -> Self {
+        Self {
+            coordinator: Arc::new(Mutex::new(None)),
+            enabled,
+        }
+    }
+
+    fn spawn_if_enabled(&self, factory: Arc<CoordinatorFactory>) {
+        if !self.enabled {
+            return;
+        }
+
+        let prewarm = self.clone();
+        tokio::spawn(async move {
+            prewarm.run(factory).await;
+        });
+    }
+
+    async fn run(self, factory: Arc<CoordinatorFactory>) {
+        let coordinator = factory.build::<DockerBackend>();
+        let start = Instant::now();
+        info!("[anneal-prewarm] starting stable Anneal prewarm");
+
+        let response = tokio::time::timeout(
+            ANNEAL_VERIFY_PROCESS_TIMEOUT_SOFT,
+            coordinator.execute(anneal_prewarm_request()),
+        )
+        .await;
+
+        match response {
+            Ok(Ok(output)) if output.response.success => {
+                let cargo_anneal_verify_ms = extract_prewarm_cargo_anneal_verify_ms(&output.stdout)
+                    .or_else(|| extract_prewarm_cargo_anneal_verify_ms(&output.stderr));
+                info!(
+                    elapsed_ms = start.elapsed().as_millis(),
+                    cargo_anneal_verify_ms = cargo_anneal_verify_ms.unwrap_or(0),
+                    cargo_anneal_verify_ms_found = cargo_anneal_verify_ms.is_some(),
+                    "[anneal-prewarm] stable Anneal prewarm finished"
+                );
+                *self.coordinator.lock().await = Some(coordinator);
+            }
+
+            Ok(Ok(output)) => {
+                warn!(
+                    elapsed_ms = start.elapsed().as_millis(),
+                    exit_detail = %output.response.exit_detail,
+                    "[anneal-prewarm] stable Anneal prewarm failed"
+                );
+                if let Err(e) = coordinator.shutdown().await {
+                    warn!(error = ?e, "[anneal-prewarm] failed to shut down failed prewarm coordinator");
+                }
+            }
+
+            Ok(Err(e)) => {
+                warn!(
+                    elapsed_ms = start.elapsed().as_millis(),
+                    error = ?e,
+                    "[anneal-prewarm] stable Anneal prewarm errored"
+                );
+                if let Err(e) = coordinator.shutdown().await {
+                    warn!(error = ?e, "[anneal-prewarm] failed to shut down errored prewarm coordinator");
+                }
+            }
+
+            Err(_) => {
+                warn!(
+                    elapsed_ms = start.elapsed().as_millis(),
+                    "[anneal-prewarm] stable Anneal prewarm timed out"
+                );
+                if let Err(e) = coordinator.shutdown().await {
+                    warn!(error = ?e, "[anneal-prewarm] failed to shut down timed-out prewarm coordinator");
+                }
+            }
+        }
+    }
+
+    pub(crate) async fn take(&self) -> Option<coordinator::Coordinator<DockerBackend>> {
+        let coordinator = self.coordinator.lock().await.take();
+        if self.enabled && coordinator.is_none() {
+            info!("[anneal-prewarm] no prewarmed coordinator ready for WebSocket");
+        }
+        coordinator
+    }
+}
+
+fn anneal_prewarm_request() -> coordinator::ExecuteRequest {
+    coordinator::ExecuteRequest {
+        channel: coordinator::Channel::Stable,
+        mode: coordinator::Mode::Debug,
+        edition: coordinator::Edition::Rust2021,
+        crate_type: coordinator::CrateType::Binary,
+        tests: false,
+        backtrace: false,
+        code: ANNEAL_PREWARM_CODE.to_owned(),
+        execution_tool: coordinator::ExecutionTool::AnnealVerify,
+    }
+}
+
+const ANNEAL_PREWARM_CODE: &str = r#"/// ```anneal, unsafe(axiom)
+/// ```
+pub unsafe fn anneal_warmup_identity(x: u32) -> u32 {
+    x
+}
+
+fn main() {}
+"#;
+
+fn extract_prewarm_cargo_anneal_verify_ms(output: &str) -> Option<u64> {
+    output
+        .lines()
+        .find(|line| {
+            line.contains("[anneal] verification succeeded in")
+                || line.contains("[anneal] verification failed after")
+        })
+        .and_then(|line| line.split_whitespace().rev().nth(1))
+        .and_then(|ms| ms.parse().ok())
+}
+
 #[tokio::main]
 pub(crate) async fn serve(config: Config) {
     let factory = Arc::new(config.coordinator_factory());
+    let anneal_prewarm = AnnealPrewarm::new(config.anneal_prewarm_stable);
 
     let (cache_crates_task, cache_crates_tx) =
         CacheTx::spawn(|rx| cache_crates_task(factory.clone(), rx));
     let (cache_versions_task, cache_versions_tx) =
         CacheTx::spawn(|rx| cache_versions_task(factory.clone(), rx));
 
-    let factory = Factory(factory);
+    let axum_factory = Factory(factory.clone());
 
     let request_db = config.request_database();
     let (db_task, db_handle) = request_db.spawn();
@@ -109,8 +238,9 @@ pub(crate) async fn serve(config: Config) {
             "/internal/debug/tracked-containers",
             get(tracked_containers),
         )
-        .layer(Extension(factory))
+        .layer(Extension(axum_factory))
         .layer(Extension(db_handle))
+        .layer(Extension(anneal_prewarm.clone()))
         .layer(Extension(cache_crates_tx))
         .layer(Extension(cache_versions_tx))
         .layer(Extension(config.github_token()))
@@ -171,6 +301,7 @@ pub(crate) async fn serve(config: Config) {
     let listener = tokio::net::TcpListener::bind(server_socket_addr)
         .await
         .unwrap();
+    anneal_prewarm.spawn_if_enabled(factory.clone());
 
     let server = axum::serve(listener, app.into_make_service());
 
@@ -656,9 +787,19 @@ async fn websocket(
     Extension(config): Extension<WebSocketConfig>,
     Extension(factory): Extension<Factory>,
     Extension(feature_flags): Extension<crate::FeatureFlags>,
+    Extension(anneal_prewarm): Extension<AnnealPrewarm>,
     Extension(db): Extension<Handle>,
 ) -> impl IntoResponse {
-    ws.on_upgrade(move |s| websocket::handle(s, config, factory.0, feature_flags.into(), db))
+    ws.on_upgrade(move |s| {
+        websocket::handle(
+            s,
+            config,
+            factory.0,
+            feature_flags.into(),
+            anneal_prewarm,
+            db,
+        )
+    })
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -1204,7 +1345,7 @@ pub(crate) mod api_orchestrator_integration_impls {
 
         #[snafu(transparent)]
         Edition { source: ParseEditionError },
-        
+
         #[snafu(transparent)]
         ExecutionTool { source: ParseExecutionToolError },
     }

@@ -2,7 +2,7 @@ use crate::public_http_api::default_execution_tool;
 use crate::{
     metrics::{self, record_metric, Endpoint, HasLabelsCore, Outcome},
     request_database::Handle,
-    server_axum::api_orchestrator_integration_impls::*,
+    server_axum::{api_orchestrator_integration_impls::*, AnnealPrewarm},
     WebSocketConfig,
 };
 
@@ -213,6 +213,7 @@ pub(crate) async fn handle(
     config: WebSocketConfig,
     factory: Arc<CoordinatorFactory>,
     feature_flags: FeatureFlags,
+    anneal_prewarm: AnnealPrewarm,
     db: Handle,
 ) {
     struct MetricGuard {
@@ -249,7 +250,7 @@ pub(crate) async fn handle(
 
     let mut mg = MetricGuard::new();
 
-    let hc = handle_core(socket, config, factory, feature_flags, db)
+    let hc = handle_core(socket, config, factory, feature_flags, anneal_prewarm, db)
         .timeout(config.overall_timeout())
         .await;
 
@@ -287,9 +288,13 @@ impl CoordinatorManager {
     const N_KINDS: usize = 1;
     const KIND_EXECUTE: usize = 0;
 
-    fn new(factory: &CoordinatorFactory) -> Self {
+    fn new(factory: &CoordinatorFactory, prewarmed: Option<Coordinator<DockerBackend>>) -> Self {
+        if prewarmed.is_some() {
+            info!("[anneal-prewarm] using prewarmed stable coordinator for WebSocket");
+        }
+
         Self {
-            coordinator: Arc::new(factory.build()),
+            coordinator: Arc::new(prewarmed.unwrap_or_else(|| factory.build())),
             tasks: Default::default(),
             semaphore: Arc::new(Semaphore::new(Self::N_PARALLEL)),
             abort_handles: Default::default(),
@@ -383,6 +388,7 @@ async fn handle_core(
     config: WebSocketConfig,
     factory: Arc<CoordinatorFactory>,
     feature_flags: FeatureFlags,
+    anneal_prewarm: AnnealPrewarm,
     db: Handle,
 ) {
     let accepted_handshake = connect_handshake(&mut socket)
@@ -405,7 +411,8 @@ async fn handle_core(
         return;
     }
 
-    let mut manager = CoordinatorManager::new(&factory);
+    let prewarmed = anneal_prewarm.take().await;
+    let mut manager = CoordinatorManager::new(&factory, prewarmed);
     let mut session_timeout = pin!(time::sleep(config.session_timeout));
     let mut idle_timeout = pin!(Fuse::terminated());
 

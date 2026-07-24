@@ -142,6 +142,39 @@ the currently timed Charon/Aeneas/Lake lines, so the next useful instrumentation
 target is to split materialization, Lake build, and Lean diagnostics with
 explicit timing inside patched `cargo-anneal`.
 
+## Stable Anneal Prewarm Experiment
+
+Set `PLAYGROUND_ANNEAL_PREWARM_STABLE=1` when starting the backend to run the
+tiny Anneal workload once after the backend successfully binds its port. The
+warmup keeps the warmed stable coordinator alive and hands it to the first
+WebSocket session that connects, so the first user-visible Verify with Anneal
+can test whether it gets the warm Lake path.
+
+The startup command should include:
+
+```sh
+PLAYGROUND_ANNEAL_PREWARM_STABLE=1
+```
+
+Useful log markers:
+
+```text
+[anneal-prewarm] starting stable Anneal prewarm
+[anneal-prewarm] stable Anneal prewarm finished
+[anneal-prewarm] using prewarmed stable coordinator for WebSocket
+```
+
+If the browser connects before the startup prewarm finishes, the backend logs:
+
+```text
+[anneal-prewarm] no prewarmed coordinator ready for WebSocket
+```
+
+For the experiment, wait until the `stable Anneal prewarm finished` line appears,
+open a fresh browser tab, then run Verify with Anneal once against the tiny test
+workload. Compare that first user-visible run's Lake build time against the
+previous cold-ish Lake time (~20-21s) and warm Lake time (~3.8-4.2s).
+
 ## Test Workload
 
 ```rust

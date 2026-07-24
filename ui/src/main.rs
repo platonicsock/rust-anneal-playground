@@ -32,7 +32,7 @@ mod public_http_api;
 mod request_database;
 mod server_axum;
 
-use env::{PLAYGROUND_GITHUB_TOKEN, PLAYGROUND_UI_ROOT};
+use env::{PLAYGROUND_ANNEAL_PREWARM_STABLE, PLAYGROUND_GITHUB_TOKEN, PLAYGROUND_UI_ROOT};
 
 fn main() {
     // Dotenv may be unable to load environment variables, but that's ok in production
@@ -57,6 +57,7 @@ struct Config {
     metrics_token: Option<String>,
     feature_flags: FeatureFlags,
     request_db_path: Option<PathBuf>,
+    anneal_prewarm_stable: bool,
     websocket_config: WebSocketConfig,
     limits: Arc<dyn ResourceLimits>,
     port: u16,
@@ -115,6 +116,7 @@ impl Config {
         let feature_flags = FeatureFlags {};
 
         let request_db_path = env::var_os("PLAYGROUND_REQUEST_DATABASE").map(Into::into);
+        let anneal_prewarm_stable = env::var_os(PLAYGROUND_ANNEAL_PREWARM_STABLE).is_some();
 
         let websocket_config = {
             let handshake_timeout = env::var("PLAYGROUND_WEBSOCKET_HANDSHAKE_TIMEOUT_S")
@@ -174,6 +176,7 @@ impl Config {
             metrics_token,
             feature_flags,
             request_db_path,
+            anneal_prewarm_stable,
             websocket_config,
             limits,
             port,
