@@ -774,6 +774,9 @@ async fn handle_execute_inner(
     use execute_error::*;
     use CompletedOrAbandoned::*;
 
+    let is_anneal_verify = req.execution_tool == coordinator::ExecutionTool::AnnealVerify;
+    let anneal_request_start = Instant::now();
+
     let coordinator::ActiveExecution {
         permit: _permit,
         mut task,
@@ -806,6 +809,8 @@ async fn handle_execute_inner(
     };
 
     let mut reported = false;
+    let mut stdout_cache = String::new();
+    let mut stderr_cache = String::new();
 
     let status = loop {
         enum Event {
@@ -844,11 +849,13 @@ async fn handle_execute_inner(
             }
 
             Stdout(stdout) => {
+                stdout_cache.push_str(&stdout);
                 let sent = send_stdout(stdout).await;
                 abandon_if_closed!(sent);
             }
 
             Stderr(stderr) => {
+                stderr_cache.push_str(&stderr);
                 let sent = send_stderr(stderr).await;
                 abandon_if_closed!(sent);
             }
@@ -871,11 +878,13 @@ async fn handle_execute_inner(
 
     // Drain any remaining output
     while let Some(Some(stdout)) = stdout_rx.recv().now_or_never() {
+        stdout_cache.push_str(&stdout);
         let sent = send_stdout(stdout).await;
         abandon_if_closed!(sent);
     }
 
     while let Some(Some(stderr)) = stderr_rx.recv().now_or_never() {
+        stderr_cache.push_str(&stderr);
         let sent = send_stderr(stderr).await;
         abandon_if_closed!(sent);
     }
@@ -887,6 +896,24 @@ async fn handle_execute_inner(
         success,
         exit_detail,
     } = status;
+
+    if is_anneal_verify {
+        let backend_total_ms = anneal_request_start.elapsed().as_millis();
+        let cargo_anneal_verify_ms = extract_cargo_anneal_verify_ms(&stdout_cache)
+            .or_else(|| extract_cargo_anneal_verify_ms(&stderr_cache));
+        let cargo_anneal_verify_ms_found = cargo_anneal_verify_ms.is_some();
+        let backend_overhead_ms =
+            cargo_anneal_verify_ms.map(|ms| backend_total_ms.saturating_sub(ms.into()));
+
+        info!(
+            backend_total_ms,
+            cargo_anneal_verify_ms = cargo_anneal_verify_ms.unwrap_or(0),
+            cargo_anneal_verify_ms_found,
+            backend_overhead_ms = backend_overhead_ms.unwrap_or(0),
+            success,
+            "[anneal-verify-timing] event=finish"
+        );
+    }
 
     let sent = tx
         .send(Ok(MessageResponse::ExecuteEnd {
@@ -900,6 +927,17 @@ async fn handle_execute_inner(
     abandon_if_closed!(sent);
 
     Ok(Completed(outcome))
+}
+
+fn extract_cargo_anneal_verify_ms(output: &str) -> Option<u64> {
+    output
+        .lines()
+        .find(|line| {
+            line.contains("[anneal] verification succeeded in")
+                || line.contains("[anneal] verification failed after")
+        })
+        .and_then(|line| line.split_whitespace().rev().nth(1))
+        .and_then(|ms| ms.parse().ok())
 }
 
 #[derive(Debug, Snafu)]
