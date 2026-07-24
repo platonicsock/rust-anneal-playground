@@ -440,7 +440,7 @@ impl LowerRequest for ExecuteRequest {
     }
 
     fn execute_cargo_request(&self) -> ExecuteCommandRequest {
-        let (args, cwd) = match self.execution_tool {
+        let (cmd, args, cwd) = match self.execution_tool {
             ExecutionTool::Cargo => {
                 let cmd = match (self.tests, self.crate_type.is_binary()) {
                     (true, _) => "test",
@@ -454,11 +454,26 @@ impl LowerRequest for ExecuteRequest {
                     args.push("--release");
                 }
 
-                (args, None)
+                ("cargo", args, None)
             }
 
             ExecutionTool::AnnealVerify => (
-                vec!["anneal", "verify", "--unsound-allow-is-valid"],
+                "sh",
+                vec![
+                    "-lc",
+                    "anneal_start_ms=$(date +%s%3N); \
+                     echo \"[anneal] starting cargo anneal verify at $(date -u +%Y-%m-%dT%H:%M:%SZ)\"; \
+                     cargo anneal verify --unsound-allow-is-valid; \
+                     anneal_status=$?; \
+                     anneal_end_ms=$(date +%s%3N); \
+                     anneal_elapsed_ms=$((anneal_end_ms - anneal_start_ms)); \
+                     if [ \"$anneal_status\" -eq 0 ]; then \
+                         echo \"[anneal] verification succeeded in ${anneal_elapsed_ms} ms\"; \
+                     else \
+                         echo \"[anneal] verification failed after ${anneal_elapsed_ms} ms\"; \
+                     fi; \
+                     exit \"$anneal_status\"",
+                ],
                 Some(ANNEAL_WORKSPACE_DIR.to_owned()),
             ),
         };
@@ -481,7 +496,7 @@ impl LowerRequest for ExecuteRequest {
         }
 
         ExecuteCommandRequest {
-            cmd: "cargo".to_owned(),
+            cmd: cmd.to_owned(),
             args: args.into_iter().map(|s| s.to_owned()).collect(),
             envs,
             cwd,

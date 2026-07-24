@@ -61,6 +61,11 @@ line 1: cold_backend_total_ms
 line 2: cold_cargo_anneal_verify_ms
 ```
 
+If the timing line says `cargo_anneal_verify_ms_found=false`, the backend did
+run Anneal but did not see the inner command timing marker in stdout/stderr.
+Rebuild the backend from a version where Anneal Verify is wrapped with the
+`[anneal] verification succeeded in ... ms` marker.
+
 Then calculate:
 
 ```text
@@ -79,4 +84,3 @@ pub unsafe fn anneal_warmup_identity(x: u32) -> u32 {
 
 fn main() {}
 ```
-
