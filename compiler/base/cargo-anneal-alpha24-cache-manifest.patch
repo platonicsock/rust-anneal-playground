@@ -1,0 +1,137 @@
+diff --git a/src/aeneas.rs b/src/aeneas.rs
+index 6fab4b2..ef7e8bf 100644
+--- a/src/aeneas.rs
++++ b/src/aeneas.rs
+@@ -28,6 +28,8 @@ use walkdir::WalkDir;
+ use crate::{generate, resolve::LockedRoots, scanner::AnnealArtifact, setup::Tool};
+ 
+ const ANNEAL_PRELUDE: &str = include_str!("Anneal.lean");
++const VENDORED_AENEAS_LEAN_DIR: &str = "vendor/aeneas/backends/lean";
++const VENDORED_AENEAS_PACKAGES_DIR: &str = "vendor/aeneas/packages";
+ 
+ /// Orchestrates the Aeneas translation and Lean verification process.
+ ///
+@@ -272,12 +274,12 @@ pub fn run_aeneas(
+     // 4. Write Lakefile
+     //
+     // Aeneas and its Lean dependencies are unpacked from the managed archive.
+-    let path = materialize_aeneas_dependency(&tmp_lean_root, &lean_root, &toolchain)?;
++    materialize_aeneas_dependency(&tmp_lean_root, &toolchain)?;
+     let aeneas_dep = format!(
+         r#"-- Aeneas rev: {}
+ require aeneas from "{}""#,
+         env!("ANNEAL_AENEAS_REV"),
+-        path.display()
++        VENDORED_AENEAS_LEAN_DIR
+     );
+ 
+     let roots_str = lake_roots.iter().map(|r| format!("`{}", r)).collect::<Vec<_>>().join(", ");
+@@ -307,6 +309,7 @@ lean_lib «User» where
+     );
+     write_if_changed(&tmp_lean_root.join("lakefile.lean"), &lakefile)
+         .context("Failed to write Lakefile")?;
++    write_lake_manifest(&tmp_lean_root).context("Failed to write Lake manifest")?;
+ 
+     // ATOMIC SWAP: If we successfully generated everything, we now swap the
+     // temporary directory with the real one.
+@@ -340,9 +343,8 @@ lean_lib «User» where
+ 
+ fn materialize_aeneas_dependency(
+     tmp_lean_root: &Path,
+-    lean_root: &Path,
+     toolchain: &crate::setup::Toolchain,
+-) -> Result<PathBuf> {
++) -> Result<()> {
+     let vendor_root = tmp_lean_root.join("vendor").join("aeneas");
+     let lean_dst = vendor_root.join("backends").join("lean");
+     let packages_dst = vendor_root.join("packages");
+@@ -353,7 +355,79 @@ fn materialize_aeneas_dependency(
+     copy_toolchain_tree_writable(&toolchain.aeneas_root().join("packages"), &packages_dst)
+         .context("Failed to copy Aeneas Lean dependencies from toolchain")?;
+ 
+-    Ok(lean_root.join("vendor").join("aeneas").join("backends").join("lean"))
++    Ok(())
++}
++
++fn write_lake_manifest(lean_root: &Path) -> Result<()> {
++    let aeneas_manifest_path = lean_root.join(VENDORED_AENEAS_LEAN_DIR).join("lake-manifest.json");
++    let content = fs::read_to_string(&aeneas_manifest_path).with_context(|| {
++        format!("Failed to read vendored manifest {}", aeneas_manifest_path.display())
++    })?;
++    let mut manifest: serde_json::Value =
++        serde_json::from_str(&content).context("Failed to parse vendored Lake manifest")?;
++
++    let Some(packages) = manifest.get_mut("packages").and_then(|packages| packages.as_array_mut())
++    else {
++        bail!("Vendored Lake manifest packages field is not an array");
++    };
++    for package in packages.iter_mut() {
++        rewrite_vendored_manifest_package(lean_root, package)?;
++    }
++    packages.insert(
++        0,
++        serde_json::json!({
++            "type": "path",
++            "scope": "",
++            "name": "aeneas",
++            "manifestFile": "lake-manifest.json",
++            "inherited": false,
++            "dir": VENDORED_AENEAS_LEAN_DIR,
++            "configFile": "lakefile.lean"
++        }),
++    );
++
++    manifest["name"] = serde_json::Value::String("anneal_verification".to_owned());
++    manifest["lakeDir"] = serde_json::Value::String(".lake".to_owned());
++    manifest["packagesDir"] = serde_json::Value::String(".lake/packages".to_owned());
++
++    let mut content =
++        serde_json::to_string_pretty(&manifest).context("Failed to serialize Lake manifest")?;
++    content.push('\n');
++    write_if_changed(&lean_root.join("lake-manifest.json"), &content)?;
++    Ok(())
++}
++
++fn rewrite_vendored_manifest_package(
++    lean_root: &Path,
++    package: &mut serde_json::Value,
++) -> Result<()> {
++    let name = package
++        .get("name")
++        .and_then(|name| name.as_str())
++        .context("Vendored Lake manifest package is missing a name")?
++        .to_owned();
++    let dir = PathBuf::from(VENDORED_AENEAS_PACKAGES_DIR).join(&name);
++    let absolute_dir = lean_root.join(&dir);
++    if !absolute_dir.exists() {
++        bail!("Vendored Lake package directory does not exist: {}", absolute_dir.display());
++    }
++
++    let Some(package) = package.as_object_mut() else {
++        bail!("Vendored Lake manifest package is not an object");
++    };
++    package.insert("type".to_owned(), serde_json::Value::String("path".to_owned()));
++    package.insert("dir".to_owned(), serde_json::Value::String(path_to_lake_string(&dir)));
++    package.insert("inherited".to_owned(), serde_json::Value::Bool(true));
++    package.remove("url");
++    package.remove("rev");
++    package.remove("inputRev");
++    package.remove("subDir");
++
++    Ok(())
++}
++
++fn path_to_lake_string(path: &Path) -> String {
++    path.to_string_lossy().replace('\\', "/")
+ }
+ 
+ fn copy_toolchain_tree_writable(src: &Path, dst: &Path) -> Result<()> {
+@@ -567,7 +641,7 @@ fn run_lake(roots: &LockedRoots, artifacts: &[AnnealArtifact]) -> Result<()> {
+     // 2. Build the project (dependencies only)
+     let toolchain = crate::setup::Toolchain::resolve()?;
+     let mut cmd = std::process::Command::new(toolchain.lean_bin().join("lake"));
+-    cmd.args(["--keep-toolchain", "--old", "build", "Generated", "Anneal"]);
++    cmd.args(["--keep-toolchain", "--old", "-j", "1", "build", "Generated", "Anneal"]);
+     cmd.current_dir(lean_root);
+     configure_lake_command(&mut cmd, &toolchain)?;
+     cmd.stdout(Stdio::piped());
