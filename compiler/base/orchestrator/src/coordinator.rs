@@ -3043,6 +3043,11 @@ const DOCKER_ARCH: &str = docker_target_arch! {
 
 const DEFAULT_DOCKER_MEMORY: &str = "512m";
 const DEFAULT_DOCKER_MEMORY_SWAP: &str = "640m";
+const PLAYGROUND_ANNEAL_PERSISTENT_TARGET: &str = "PLAYGROUND_ANNEAL_PERSISTENT_TARGET";
+const PLAYGROUND_ANNEAL_PERSISTENT_TARGET_VOLUME_PREFIX: &str =
+    "PLAYGROUND_ANNEAL_PERSISTENT_TARGET_VOLUME_PREFIX";
+const DEFAULT_ANNEAL_PERSISTENT_TARGET_VOLUME_PREFIX: &str = "playground-anneal-target";
+const ANNEAL_DOCKER_TARGET_DIR: &str = "/playground/anneal-workspace/target/anneal";
 
 fn basic_secure_docker_command() -> Command {
     let memory = std::env::var("PLAYGROUND_DOCKER_MEMORY")
@@ -3083,7 +3088,18 @@ impl Backend for DockerBackend {
             .args(["--name", &name])
             .arg("-i")
             .args(["-a", "stdin", "-a", "stdout", "-a", "stderr"])
-            .arg("--rm")
+            .arg("--rm");
+        if let Some(volume) = anneal_persistent_target_volume(channel) {
+            let mount = format!("type=volume,source={volume},target={ANNEAL_DOCKER_TARGET_DIR}");
+            info!(
+                ?channel,
+                volume = %volume,
+                target = ANNEAL_DOCKER_TARGET_DIR,
+                "[anneal-cache] mounting persistent Anneal target volume"
+            );
+            command.args(["--mount", &mount]);
+        }
+        command
             .arg(channel.to_container_name())
             .arg("worker")
             .arg("/playground");
@@ -3094,6 +3110,21 @@ impl Backend for DockerBackend {
 
         (command, kill)
     }
+}
+
+fn anneal_persistent_target_volume(channel: Channel) -> Option<String> {
+    if std::env::var_os(PLAYGROUND_ANNEAL_PERSISTENT_TARGET).is_none() {
+        return None;
+    }
+
+    let prefix = std::env::var(PLAYGROUND_ANNEAL_PERSISTENT_TARGET_VOLUME_PREFIX)
+        .unwrap_or_else(|_| DEFAULT_ANNEAL_PERSISTENT_TARGET_VOLUME_PREFIX.to_owned());
+    let channel = match channel {
+        Channel::Stable => "stable",
+        Channel::Beta => "beta",
+        Channel::Nightly => "nightly",
+    };
+    Some(format!("{prefix}-{channel}"))
 }
 
 impl Channel {

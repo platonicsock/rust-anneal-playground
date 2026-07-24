@@ -175,6 +175,52 @@ open a fresh browser tab, then run Verify with Anneal once against the tiny test
 workload. Compare that first user-visible run's Lake build time against the
 previous cold-ish Lake time (~20-21s) and warm Lake time (~3.8-4.2s).
 
+## Persistent Anneal Target Experiment
+
+Set `PLAYGROUND_ANNEAL_PERSISTENT_TARGET=1` when starting the backend to mount a
+Docker named volume at `/playground/anneal-workspace/target/anneal` in each
+compiler container. The volume name is channel-specific:
+
+```text
+playground-anneal-target-stable
+playground-anneal-target-beta
+playground-anneal-target-nightly
+```
+
+The first run that creates an empty Docker named volume should initialize it
+from the compiler image, so the baked `cargo_target` cache remains available.
+Subsequent compiler containers can then reuse the runtime-generated Lean
+workspace and `.lake` build output across backend and container restarts.
+
+Use it together with startup prewarm to test whether the hidden prewarm itself
+becomes warm after a restart:
+
+```sh
+PLAYGROUND_ANNEAL_PERSISTENT_TARGET=1
+PLAYGROUND_ANNEAL_PREWARM_STABLE=1
+```
+
+Useful log marker:
+
+```text
+[anneal-cache] mounting persistent Anneal target volume
+```
+
+Expected measurement:
+
+1. Start once with the persistent target enabled and let the stable prewarm
+   finish. The first prewarm may still pay the cold Lake cost if the volume was
+   empty.
+2. Restart the backend with the same env vars.
+3. The next startup prewarm should show a warm `lake build` time, roughly in the
+   same 4s band as the previous warm user-visible runs.
+
+To reset the stable-channel experiment:
+
+```sh
+docker volume rm playground-anneal-target-stable
+```
+
 ## Test Workload
 
 ```rust
