@@ -1,5 +1,5 @@
 diff --git a/src/aeneas.rs b/src/aeneas.rs
-index 6fab4b2..ef7e8bf 100644
+index 6fab4b2..12057f0 100644
 --- a/src/aeneas.rs
 +++ b/src/aeneas.rs
 @@ -28,6 +28,8 @@ use walkdir::WalkDir;
@@ -34,7 +34,7 @@ index 6fab4b2..ef7e8bf 100644
  
      // ATOMIC SWAP: If we successfully generated everything, we now swap the
      // temporary directory with the real one.
-@@ -340,9 +343,8 @@ lean_lib «User» where
+@@ -340,20 +343,93 @@ lean_lib «User» where
  
  fn materialize_aeneas_dependency(
      tmp_lean_root: &Path,
@@ -45,11 +45,15 @@ index 6fab4b2..ef7e8bf 100644
      let vendor_root = tmp_lean_root.join("vendor").join("aeneas");
      let lean_dst = vendor_root.join("backends").join("lean");
      let packages_dst = vendor_root.join("packages");
-@@ -353,7 +355,79 @@ fn materialize_aeneas_dependency(
+ 
+     println!("Materializing packages by copying from toolchain...");
++    let start = std::time::Instant::now();
+     copy_toolchain_tree_writable(&toolchain.aeneas_lean_dir(), &lean_dst)
+         .context("Failed to copy Aeneas Lean package from toolchain")?;
      copy_toolchain_tree_writable(&toolchain.aeneas_root().join("packages"), &packages_dst)
          .context("Failed to copy Aeneas Lean dependencies from toolchain")?;
- 
--    Ok(lean_root.join("vendor").join("aeneas").join("backends").join("lean"))
++    log::trace!("Materializing Aeneas packages took {:.2?}", start.elapsed());
++
 +    Ok(())
 +}
 +
@@ -120,18 +124,33 @@ index 6fab4b2..ef7e8bf 100644
 +
 +    Ok(())
 +}
-+
+ 
+-    Ok(lean_root.join("vendor").join("aeneas").join("backends").join("lean"))
 +fn path_to_lake_string(path: &Path) -> String {
 +    path.to_string_lossy().replace('\\', "/")
  }
  
  fn copy_toolchain_tree_writable(src: &Path, dst: &Path) -> Result<()> {
-@@ -567,7 +641,7 @@ fn run_lake(roots: &LockedRoots, artifacts: &[AnnealArtifact]) -> Result<()> {
-     // 2. Build the project (dependencies only)
-     let toolchain = crate::setup::Toolchain::resolve()?;
-     let mut cmd = std::process::Command::new(toolchain.lean_bin().join("lake"));
--    cmd.args(["--keep-toolchain", "--old", "build", "Generated", "Anneal"]);
-+    cmd.args(["--keep-toolchain", "--old", "-j", "1", "build", "Generated", "Anneal"]);
-     cmd.current_dir(lean_root);
-     configure_lake_command(&mut cmd, &toolchain)?;
-     cmd.stdout(Stdio::piped());
+@@ -633,10 +709,12 @@ fn run_lake(roots: &LockedRoots, artifacts: &[AnnealArtifact]) -> Result<()> {
+ 
+     // 3. Run Diagnostics
+     log::info!("Running Lean diagnostics...");
++    let diagnostics_start = std::time::Instant::now();
+     let mut has_errors = false;
+     let mut mapper = crate::diagnostics::DiagnosticMapper::new(roots.workspace().clone());
+ 
+     for artifact in artifacts {
++        let diagnostic_start = std::time::Instant::now();
+         let slug = artifact.artifact_slug();
+         // The path in generated file is `generated/Slug/Specs.lean`
+         // We construct the relative path from the Lake root (which is `target/anneal/<hash>/lean`)
+@@ -737,7 +815,9 @@ fn run_lake(roots: &LockedRoots, artifacts: &[AnnealArtifact]) -> Result<()> {
+             let (file, start, end) = resolve_mapping(&diag, &mappings);
+             mapper.render_raw(&file, diag.message, level, start, end, |s| eprintln!("{s}"));
+         }
++        log::trace!("Lean diagnostics for '{}' took {:.2?}", slug, diagnostic_start.elapsed());
+     }
++    log::trace!("Lean diagnostics took {:.2?}", diagnostics_start.elapsed());
+ 
+     if has_errors {
+         let cmd = if std::env::var("__ZEROCOPY_LOCAL_DEV").is_ok() {
