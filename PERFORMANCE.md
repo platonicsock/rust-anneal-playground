@@ -221,6 +221,28 @@ To reset the stable-channel experiment:
 docker volume rm playground-anneal-target-stable
 ```
 
+## Generated Lean Source Sync Experiment
+
+The patched `cargo-anneal` now syncs the fresh `lean.tmp` tree into the existing
+`lean` tree instead of deleting `lean` and renaming `lean.tmp` over it. During
+that sync, byte-identical files are left in place, stale files are removed, and
+the top-level `.lake` directory is preserved. This should keep mtimes stable for
+unchanged generated Lean files and test whether Lake can skip more work than the
+current warm ~4s build.
+
+Useful log marker:
+
+```text
+Syncing Lean directory took
+```
+
+Expected measurement after rebuilding the compiler image:
+
+1. Run the tiny Anneal workload once to populate the persistent target volume.
+2. Run the same workload again without changing the source.
+3. Compare the second run's `Syncing Lean directory took` and `lake build`
+   timings against the current warm baseline of ~3.8-4.0s for Lake.
+
 ## Test Workload
 
 ```rust

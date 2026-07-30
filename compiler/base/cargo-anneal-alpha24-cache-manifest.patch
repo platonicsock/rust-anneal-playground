@@ -2,7 +2,7 @@ diff --git a/src/aeneas.rs b/src/aeneas.rs
 index 6fab4b2..12057f0 100644
 --- a/src/aeneas.rs
 +++ b/src/aeneas.rs
-@@ -28,6 +28,8 @@ use walkdir::WalkDir;
+@@ -28,6 +28,8 @@
  use crate::{generate, resolve::LockedRoots, scanner::AnnealArtifact, setup::Tool};
  
  const ANNEAL_PRELUDE: &str = include_str!("Anneal.lean");
@@ -11,7 +11,7 @@ index 6fab4b2..12057f0 100644
  
  /// Orchestrates the Aeneas translation and Lean verification process.
  ///
-@@ -272,12 +274,12 @@ pub fn run_aeneas(
+@@ -272,12 +274,12 @@
      // 4. Write Lakefile
      //
      // Aeneas and its Lean dependencies are unpacked from the managed archive.
@@ -26,15 +26,42 @@ index 6fab4b2..12057f0 100644
      );
  
      let roots_str = lake_roots.iter().map(|r| format!("`{}", r)).collect::<Vec<_>>().join(", ");
-@@ -307,6 +309,7 @@ lean_lib «User» where
+@@ -307,55 +309,222 @@
      );
      write_if_changed(&tmp_lean_root.join("lakefile.lean"), &lakefile)
          .context("Failed to write Lakefile")?;
 +    write_lake_manifest(&tmp_lean_root).context("Failed to write Lake manifest")?;
  
-     // ATOMIC SWAP: If we successfully generated everything, we now swap the
-     // temporary directory with the real one.
-@@ -340,20 +343,93 @@ lean_lib «User» where
+-    // ATOMIC SWAP: If we successfully generated everything, we now swap the
+-    // temporary directory with the real one.
+     let lean_root = roots.lean_root();
+-    if lean_root.exists() {
+-        // Preserve the `.lake` directory and manifest to prevent re-downloading
+-        // dependencies (like Mathlib) on subsequent runs.
+-        let old_lake = lean_root.join(".lake");
+-        let old_manifest = lean_root.join("lake-manifest.json");
+-        if old_lake.exists() {
+-            fs::rename(&old_lake, tmp_lean_root.join(".lake"))?;
+-        }
+-        if old_manifest.exists() {
+-            fs::rename(&old_manifest, tmp_lean_root.join("lake-manifest.json"))?;
+-        }
+-
+-        // Remove the existing directory before renaming the temporary directory.
+-        // Note: `fs::rename` on Unix typically requires the target directory to be
+-        // empty if it exists. While not strictly atomic (there is a brief window
+-        // where the directory is missing), this prevents a half-written state.
+-        log::debug!("Removing existing lean directory: {}", lean_root.display());
+-        fs::remove_dir_all(&lean_root).context("Failed to remove existing lean directory")?;
+-    }
+-
+-    log::debug!("Renaming {} to {}", tmp_lean_root.display(), lean_root.display());
+-    fs::rename(&tmp_lean_root, &lean_root)
+-        .context("Failed to rename temporary lean directory to target")?;
++    sync_lean_root(&tmp_lean_root, &lean_root).context("Failed to sync Lean directory")?;
+ 
+     Ok(())
+ }
  
  fn materialize_aeneas_dependency(
      tmp_lean_root: &Path,
@@ -53,7 +80,8 @@ index 6fab4b2..12057f0 100644
      copy_toolchain_tree_writable(&toolchain.aeneas_root().join("packages"), &packages_dst)
          .context("Failed to copy Aeneas Lean dependencies from toolchain")?;
 +    log::trace!("Materializing Aeneas packages took {:.2?}", start.elapsed());
-+
+ 
+-    Ok(lean_root.join("vendor").join("aeneas").join("backends").join("lean"))
 +    Ok(())
 +}
 +
@@ -94,8 +122,8 @@ index 6fab4b2..12057f0 100644
 +    content.push('\n');
 +    write_if_changed(&lean_root.join("lake-manifest.json"), &content)?;
 +    Ok(())
-+}
-+
+ }
+ 
 +fn rewrite_vendored_manifest_package(
 +    lean_root: &Path,
 +    package: &mut serde_json::Value,
@@ -105,7 +133,7 @@ index 6fab4b2..12057f0 100644
 +        .and_then(|name| name.as_str())
 +        .context("Vendored Lake manifest package is missing a name")?
 +        .to_owned();
-+    let dir = PathBuf::from(VENDORED_AENEAS_PACKAGES_DIR).join(&name);
++    let dir = std::path::PathBuf::from(VENDORED_AENEAS_PACKAGES_DIR).join(&name);
 +    let absolute_dir = lean_root.join(&dir);
 +    if !absolute_dir.exists() {
 +        bail!("Vendored Lake package directory does not exist: {}", absolute_dir.display());
@@ -124,14 +152,132 @@ index 6fab4b2..12057f0 100644
 +
 +    Ok(())
 +}
- 
--    Ok(lean_root.join("vendor").join("aeneas").join("backends").join("lean"))
++
 +fn path_to_lake_string(path: &Path) -> String {
 +    path.to_string_lossy().replace('\\', "/")
- }
- 
++}
++
++fn sync_lean_root(tmp_lean_root: &Path, lean_root: &Path) -> Result<()> {
++    let start = std::time::Instant::now();
++    if !lean_root.exists() {
++        log::debug!("Renaming {} to {}", tmp_lean_root.display(), lean_root.display());
++        fs::rename(tmp_lean_root, lean_root)
++            .context("Failed to rename temporary lean directory to target")?;
++        log::trace!("Syncing Lean directory took {:.2?}", start.elapsed());
++        return Ok(());
++    }
++
++    if !lean_root.is_dir() {
++        bail!("Lean root exists but is not a directory: {}", lean_root.display());
++    }
++
++    log::debug!(
++        "Syncing {} into {} while preserving unchanged files",
++        tmp_lean_root.display(),
++        lean_root.display()
++    );
++    sync_directory_preserving_unchanged(tmp_lean_root, lean_root, true)
++        .context("Failed to merge temporary Lean directory into existing Lean directory")?;
++    fs::remove_dir_all(tmp_lean_root).context("Failed to remove temporary Lean directory")?;
++    log::trace!("Syncing Lean directory took {:.2?}", start.elapsed());
++    Ok(())
++}
++
++fn sync_directory_preserving_unchanged(src: &Path, dst: &Path, preserve_top_level_lake: bool) -> Result<()> {
++    fs::create_dir_all(dst)
++        .with_context(|| format!("Failed to create destination directory {}", dst.display()))?;
++
++    let mut expected = std::collections::BTreeSet::new();
++    for entry in fs::read_dir(src).with_context(|| format!("Failed to read {}", src.display()))? {
++        let entry = entry.context("Failed to read source directory entry")?;
++        let file_name = entry.file_name();
++        expected.insert(file_name.clone());
++
++        let src_path = entry.path();
++        let dst_path = dst.join(&file_name);
++        let src_metadata = fs::symlink_metadata(&src_path)
++            .with_context(|| format!("Failed to stat {}", src_path.display()))?;
++
++        if src_metadata.is_dir() {
++            if path_exists(&dst_path) && !dst_path.is_dir() {
++                remove_path(&dst_path)
++                    .with_context(|| format!("Failed to replace {}", dst_path.display()))?;
++            }
++            sync_directory_preserving_unchanged(&src_path, &dst_path, false)?;
++        } else {
++            sync_file_preserving_unchanged(&src_path, &dst_path)?;
++        }
++    }
++
++    for entry in fs::read_dir(dst).with_context(|| format!("Failed to read {}", dst.display()))? {
++        let entry = entry.context("Failed to read destination directory entry")?;
++        let file_name = entry.file_name();
++        if preserve_top_level_lake && file_name == std::ffi::OsStr::new(".lake") {
++            continue;
++        }
++        if !expected.contains(&file_name) {
++            let path = entry.path();
++            remove_path(&path).with_context(|| format!("Failed to remove stale path {}", path.display()))?;
++        }
++    }
++
++    Ok(())
++}
++
++fn sync_file_preserving_unchanged(src: &Path, dst: &Path) -> Result<()> {
++    if files_equal(src, dst)? {
++        return Ok(());
++    }
++
++    if path_exists(dst) {
++        remove_path(dst).with_context(|| format!("Failed to replace {}", dst.display()))?;
++    }
++    fs::rename(src, dst)
++        .with_context(|| format!("Failed to move {} to {}", src.display(), dst.display()))?;
++    Ok(())
++}
++
++fn files_equal(src: &Path, dst: &Path) -> Result<bool> {
++    if !dst.is_file() {
++        return Ok(false);
++    }
++
++    let src_metadata =
++        fs::metadata(src).with_context(|| format!("Failed to stat {}", src.display()))?;
++    let dst_metadata =
++        fs::metadata(dst).with_context(|| format!("Failed to stat {}", dst.display()))?;
++    if src_metadata.len() != dst_metadata.len() {
++        return Ok(false);
++    }
++    if src_metadata.len() == 0 {
++        return Ok(true);
++    }
++
++    let src_content = fs::read(src).with_context(|| format!("Failed to read {}", src.display()))?;
++    let dst_content = fs::read(dst).with_context(|| format!("Failed to read {}", dst.display()))?;
++    Ok(src_content == dst_content)
++}
++
++fn path_exists(path: &Path) -> bool {
++    fs::symlink_metadata(path).is_ok()
++}
++
++fn remove_path(path: &Path) -> Result<()> {
++    let metadata =
++        fs::symlink_metadata(path).with_context(|| format!("Failed to stat {}", path.display()))?;
++    if metadata.is_dir() {
++        fs::remove_dir_all(path)
++            .with_context(|| format!("Failed to remove directory {}", path.display()))?;
++    } else {
++        fs::remove_file(path).with_context(|| format!("Failed to remove file {}", path.display()))?;
++    }
++    Ok(())
++}
++
  fn copy_toolchain_tree_writable(src: &Path, dst: &Path) -> Result<()> {
-@@ -633,10 +709,12 @@ fn run_lake(roots: &LockedRoots, artifacts: &[AnnealArtifact]) -> Result<()> {
+     if dst.exists() {
+         fs::remove_dir_all(dst)
+@@ -633,10 +802,12 @@
  
      // 3. Run Diagnostics
      log::info!("Running Lean diagnostics...");
@@ -144,7 +290,7 @@ index 6fab4b2..12057f0 100644
          let slug = artifact.artifact_slug();
          // The path in generated file is `generated/Slug/Specs.lean`
          // We construct the relative path from the Lake root (which is `target/anneal/<hash>/lean`)
-@@ -737,7 +815,9 @@ fn run_lake(roots: &LockedRoots, artifacts: &[AnnealArtifact]) -> Result<()> {
+@@ -737,7 +908,9 @@
              let (file, start, end) = resolve_mapping(&diag, &mappings);
              mapper.render_raw(&file, diag.message, level, start, end, |s| eprintln!("{s}"));
          }
