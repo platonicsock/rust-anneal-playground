@@ -256,7 +256,7 @@ lake build Generated Anneal
 and runs diagnostics through:
 
 ```text
-lake lean generated/<slug>/<spec>.lean -- --json
+lake --old lean generated/<slug>/<spec>.lean -- --json
 ```
 
 The goal is to test whether Lake can build the imports needed for the spec and
@@ -268,7 +268,7 @@ Useful log markers:
 
 ```text
 [anneal-lake-lean] skipping standalone 'lake build'
-'lake lean -- --json' for
+'lake --old lean -- --json' for
 Lean diagnostics took
 ```
 
@@ -279,8 +279,13 @@ Expected measurement:
    `PLAYGROUND_ANNEAL_PERSISTENT_TARGET=1`, and
    `PLAYGROUND_ANNEAL_PREWARM_STABLE=1`.
 3. Run the tiny Anneal workload twice without changing the source.
-4. Compare total runtime and the `lake lean -- --json` timing against the
+4. Compare total runtime and the `lake --old lean -- --json` timing against the
    current warm baseline: ~4s Lake build plus ~6.2-6.5s diagnostics.
+
+The first version of this experiment used `lake lean` without `--old` and failed
+quickly with `failed to remove output artifacts: permission denied`. That points
+at Lake's non-old build mode trying to clean artifacts under the symlinked,
+read-only prebuilt Aeneas package cache.
 
 ## Test Workload
 

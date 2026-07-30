@@ -342,7 +342,7 @@ index 6fab4b2..12057f0 100644
 +        std::env::var_os(PLAYGROUND_ANNEAL_LAKE_LEAN_DIAGNOSTICS).is_some();
 +    if use_lake_lean_diagnostics {
 +        log::info!(
-+            "[anneal-lake-lean] skipping standalone 'lake build'; diagnostics will use 'lake lean -- --json'"
++            "[anneal-lake-lean] skipping standalone 'lake build'; diagnostics will use 'lake --old lean -- --json'"
 +        );
 +    } else {
 +        log::info!("Running 'lake build' in {}", lean_root.display());
@@ -484,7 +484,7 @@ index 6fab4b2..12057f0 100644
 +    let mut cmd = std::process::Command::new(toolchain.lean_bin().join("lake"));
 +    let start = std::time::Instant::now();
 +    if use_lake_lean_diagnostics {
-+        cmd.args(["--keep-toolchain", "lean", specs_rel_path, "--", "--json"]);
++        cmd.args(["--keep-toolchain", "--old", "lean", specs_rel_path, "--", "--json"]);
 +    } else {
 +        cmd.args(["--keep-toolchain", "env", "lean", "--json", specs_rel_path]);
 +    }
@@ -496,7 +496,7 @@ index 6fab4b2..12057f0 100644
 +    let output = cmd.output().context("Failed to run lean compiler")?;
 +    if use_lake_lean_diagnostics {
 +        log::trace!(
-+            "'lake lean -- --json' for '{}' took {:.2?}",
++            "'lake --old lean -- --json' for '{}' took {:.2?}",
 +            slug,
 +            start.elapsed()
 +        );
