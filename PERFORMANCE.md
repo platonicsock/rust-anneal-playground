@@ -243,6 +243,45 @@ Expected measurement after rebuilding the compiler image:
 3. Compare the second run's `Syncing Lean directory took` and `lake build`
    timings against the current warm baseline of ~3.8-4.0s for Lake.
 
+## Lake Lean Diagnostics Experiment
+
+Set `PLAYGROUND_ANNEAL_LAKE_LEAN_DIAGNOSTICS=1` when starting the backend to pass
+an experimental diagnostics mode into the compiler container. In this mode,
+patched `cargo-anneal` skips the standalone:
+
+```text
+lake build Generated Anneal
+```
+
+and runs diagnostics through:
+
+```text
+lake lean generated/<slug>/<spec>.lean -- --json
+```
+
+The goal is to test whether Lake can build the imports needed for the spec and
+emit JSON diagnostics in a single command, rather than paying both the warm
+`lake build` cost (~4s) and a separate `lake env lean --json` diagnostics cost
+(~6.2-6.5s).
+
+Useful log markers:
+
+```text
+[anneal-lake-lean] skipping standalone 'lake build'
+'lake lean -- --json' for
+Lean diagnostics took
+```
+
+Expected measurement:
+
+1. Rebuild the stable compiler image.
+2. Restart the backend with `PLAYGROUND_ANNEAL_LAKE_LEAN_DIAGNOSTICS=1`,
+   `PLAYGROUND_ANNEAL_PERSISTENT_TARGET=1`, and
+   `PLAYGROUND_ANNEAL_PREWARM_STABLE=1`.
+3. Run the tiny Anneal workload twice without changing the source.
+4. Compare total runtime and the `lake lean -- --json` timing against the
+   current warm baseline: ~4s Lake build plus ~6.2-6.5s diagnostics.
+
 ## Test Workload
 
 ```rust

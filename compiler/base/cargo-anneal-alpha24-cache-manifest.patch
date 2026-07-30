@@ -2,16 +2,17 @@ diff --git a/src/aeneas.rs b/src/aeneas.rs
 index 6fab4b2..12057f0 100644
 --- a/src/aeneas.rs
 +++ b/src/aeneas.rs
-@@ -28,6 +28,8 @@
+@@ -28,6 +28,9 @@
  use crate::{generate, resolve::LockedRoots, scanner::AnnealArtifact, setup::Tool};
  
  const ANNEAL_PRELUDE: &str = include_str!("Anneal.lean");
 +const VENDORED_AENEAS_LEAN_DIR: &str = "vendor/aeneas/backends/lean";
 +const VENDORED_AENEAS_PACKAGES_DIR: &str = "vendor/aeneas/packages";
++const PLAYGROUND_ANNEAL_LAKE_LEAN_DIAGNOSTICS: &str = "PLAYGROUND_ANNEAL_LAKE_LEAN_DIAGNOSTICS";
  
  /// Orchestrates the Aeneas translation and Lean verification process.
  ///
-@@ -272,12 +274,12 @@
+@@ -272,12 +275,12 @@
      // 4. Write Lakefile
      //
      // Aeneas and its Lean dependencies are unpacked from the managed archive.
@@ -26,7 +27,7 @@ index 6fab4b2..12057f0 100644
      );
  
      let roots_str = lake_roots.iter().map(|r| format!("`{}", r)).collect::<Vec<_>>().join(", ");
-@@ -307,55 +309,222 @@
+@@ -307,55 +310,222 @@
      );
      write_if_changed(&tmp_lean_root.join("lakefile.lean"), &lakefile)
          .context("Failed to write Lakefile")?;
@@ -54,12 +55,12 @@ index 6fab4b2..12057f0 100644
 -        log::debug!("Removing existing lean directory: {}", lean_root.display());
 -        fs::remove_dir_all(&lean_root).context("Failed to remove existing lean directory")?;
 -    }
--
++    sync_lean_root(&tmp_lean_root, &lean_root).context("Failed to sync Lean directory")?;
+ 
 -    log::debug!("Renaming {} to {}", tmp_lean_root.display(), lean_root.display());
 -    fs::rename(&tmp_lean_root, &lean_root)
 -        .context("Failed to rename temporary lean directory to target")?;
-+    sync_lean_root(&tmp_lean_root, &lean_root).context("Failed to sync Lean directory")?;
- 
+-
      Ok(())
  }
  
@@ -122,8 +123,8 @@ index 6fab4b2..12057f0 100644
 +    content.push('\n');
 +    write_if_changed(&lean_root.join("lake-manifest.json"), &content)?;
 +    Ok(())
- }
- 
++}
++
 +fn rewrite_vendored_manifest_package(
 +    lean_root: &Path,
 +    package: &mut serde_json::Value,
@@ -256,8 +257,8 @@ index 6fab4b2..12057f0 100644
 +    let src_content = fs::read(src).with_context(|| format!("Failed to read {}", src.display()))?;
 +    let dst_content = fs::read(dst).with_context(|| format!("Failed to read {}", dst.display()))?;
 +    Ok(src_content == dst_content)
-+}
-+
+ }
+ 
 +fn path_exists(path: &Path) -> bool {
 +    fs::symlink_metadata(path).is_ok()
 +}
@@ -277,8 +278,88 @@ index 6fab4b2..12057f0 100644
  fn copy_toolchain_tree_writable(src: &Path, dst: &Path) -> Result<()> {
      if dst.exists() {
          fs::remove_dir_all(dst)
-@@ -633,10 +802,12 @@
+@@ -562,94 +732,39 @@
+ fn run_lake(roots: &LockedRoots, artifacts: &[AnnealArtifact]) -> Result<()> {
+     let generated = roots.lean_generated_root();
+     let lean_root = generated.parent().unwrap();
+-    log::info!("Running 'lake build' in {}", lean_root.display());
+-
+-    // 2. Build the project (dependencies only)
+     let toolchain = crate::setup::Toolchain::resolve()?;
+-    let mut cmd = std::process::Command::new(toolchain.lean_bin().join("lake"));
+-    cmd.args(["--keep-toolchain", "--old", "build", "Generated", "Anneal"]);
+-    cmd.current_dir(lean_root);
+-    configure_lake_command(&mut cmd, &toolchain)?;
+-    cmd.stdout(Stdio::piped());
+-    cmd.stderr(Stdio::piped());
  
+-    let start = std::time::Instant::now();
+-    let mut child = cmd.spawn().context("Failed to spawn lake")?;
+-
+-    // Capture stderr in background
+-    let stderr_buffer = Arc::new(Mutex::new(Vec::new()));
+-    let stderr_clone = stderr_buffer.clone();
+-    let stderr_handle = child.stderr.take().map(|stderr| {
+-        std::thread::spawn(move || {
+-            let reader = BufReader::new(stderr);
+-            for line in reader.lines().map_while(Result::ok) {
+-                stderr_clone.lock().unwrap().push(line);
+-            }
+-        })
+-    });
+-
+-    // UI Spinner
+-    let pb = ProgressBar::new_spinner();
+-    pb.set_style(ProgressStyle::default_spinner().template("{spinner:.green} {msg}").unwrap());
+-    pb.enable_steady_tick(std::time::Duration::from_millis(100));
+-    pb.set_message("Building Lean dependencies...");
+-
+-    // Capture stdout in background (while ticking progress bar)
+-    let stdout_buffer = Arc::new(Mutex::new(Vec::new()));
+-    let stdout_clone = stdout_buffer.clone();
+-    let pb_clone = pb.clone();
+-
+-    let stdout_handle = child.stdout.take().map(|stdout| {
+-        std::thread::spawn(move || {
+-            let reader = BufReader::new(stdout);
+-            for line in reader.lines().map_while(Result::ok) {
+-                stdout_clone.lock().unwrap().push(line);
+-                pb_clone.tick();
+-            }
+-        })
+-    });
+-
+-    let status = child.wait().context("Failed to wait for lake")?;
+-    pb.finish_and_clear();
+-    log::trace!("'lake build' took {:.2?}", start.elapsed());
+-
+-    // Join the threads to ensure we have all logs
+-    if let Some(handle) = stderr_handle
+-        && let Err(e) = handle.join()
+-    {
+-        log::error!("Stderr reading thread panicked: {:?}", e);
++    let use_lake_lean_diagnostics =
++        std::env::var_os(PLAYGROUND_ANNEAL_LAKE_LEAN_DIAGNOSTICS).is_some();
++    if use_lake_lean_diagnostics {
++        log::info!(
++            "[anneal-lake-lean] skipping standalone 'lake build'; diagnostics will use 'lake lean -- --json'"
++        );
++    } else {
++        log::info!("Running 'lake build' in {}", lean_root.display());
++        run_lake_build(lean_root, &toolchain)?;
+     }
+-    if let Some(handle) = stdout_handle
+-        && let Err(e) = handle.join()
+-    {
+-        log::error!("Stdout reading thread panicked: {:?}", e);
+-    }
+ 
+-    if !status.success() {
+-        let stderr = stderr_buffer.lock().unwrap().join("\n");
+-        let stdout = stdout_buffer.lock().unwrap().join("\n");
+-        bail!("Lean build failed\nSTDOUT:\n{}\nSTDERR:\n{}", stdout, stderr);
+-    }
+-
      // 3. Run Diagnostics
      log::info!("Running Lean diagnostics...");
 +    let diagnostics_start = std::time::Instant::now();
@@ -290,7 +371,27 @@ index 6fab4b2..12057f0 100644
          let slug = artifact.artifact_slug();
          // The path in generated file is `generated/Slug/Specs.lean`
          // We construct the relative path from the Lake root (which is `target/anneal/<hash>/lean`)
-@@ -737,7 +908,9 @@
+         let specs_rel_path = format!("generated/{}/{}", slug, artifact.lean_spec_file_name());
+ 
+-        let mut cmd = std::process::Command::new(toolchain.lean_bin().join("lake"));
+-        cmd.args(["--keep-toolchain", "env", "lean", "--json", &specs_rel_path]);
+-        cmd.current_dir(lean_root);
+-        configure_lake_command(&mut cmd, &toolchain)?;
+-        cmd.stdout(Stdio::piped());
+-        cmd.stderr(Stdio::piped());
+-
+-        let output = cmd.output().context("Failed to run lean compiler")?;
++        let output = run_lean_diagnostics_command(
++            &toolchain,
++            lean_root,
++            &specs_rel_path,
++            &slug,
++            use_lake_lean_diagnostics,
++        )?;
+ 
+         let output_str = String::from_utf8_lossy(&output.stdout);
+         let specs_abs_path = lean_root.join(&specs_rel_path);
+@@ -737,7 +852,9 @@
              let (file, start, end) = resolve_mapping(&diag, &mappings);
              mapper.render_raw(&file, diag.message, level, start, end, |s| eprintln!("{s}"));
          }
@@ -300,3 +401,109 @@ index 6fab4b2..12057f0 100644
  
      if has_errors {
          let cmd = if std::env::var("__ZEROCOPY_LOCAL_DEV").is_ok() {
+@@ -753,6 +870,105 @@
+     Ok(())
+ }
+ 
++fn run_lake_build(lean_root: &Path, toolchain: &crate::setup::Toolchain) -> Result<()> {
++    let mut cmd = std::process::Command::new(toolchain.lean_bin().join("lake"));
++    cmd.args(["--keep-toolchain", "--old", "build", "Generated", "Anneal"]);
++    cmd.current_dir(lean_root);
++    configure_lake_command(&mut cmd, toolchain)?;
++    cmd.stdout(Stdio::piped());
++    cmd.stderr(Stdio::piped());
++
++    let start = std::time::Instant::now();
++    let mut child = cmd.spawn().context("Failed to spawn lake")?;
++
++    // Capture stderr in background
++    let stderr_buffer = Arc::new(Mutex::new(Vec::new()));
++    let stderr_clone = stderr_buffer.clone();
++    let stderr_handle = child.stderr.take().map(|stderr| {
++        std::thread::spawn(move || {
++            let reader = BufReader::new(stderr);
++            for line in reader.lines().map_while(Result::ok) {
++                stderr_clone.lock().unwrap().push(line);
++            }
++        })
++    });
++
++    // UI Spinner
++    let pb = ProgressBar::new_spinner();
++    pb.set_style(ProgressStyle::default_spinner().template("{spinner:.green} {msg}").unwrap());
++    pb.enable_steady_tick(std::time::Duration::from_millis(100));
++    pb.set_message("Building Lean dependencies...");
++
++    // Capture stdout in background (while ticking progress bar)
++    let stdout_buffer = Arc::new(Mutex::new(Vec::new()));
++    let stdout_clone = stdout_buffer.clone();
++    let pb_clone = pb.clone();
++
++    let stdout_handle = child.stdout.take().map(|stdout| {
++        std::thread::spawn(move || {
++            let reader = BufReader::new(stdout);
++            for line in reader.lines().map_while(Result::ok) {
++                stdout_clone.lock().unwrap().push(line);
++                pb_clone.tick();
++            }
++        })
++    });
++
++    let status = child.wait().context("Failed to wait for lake")?;
++    pb.finish_and_clear();
++    log::trace!("'lake build' took {:.2?}", start.elapsed());
++
++    // Join the threads to ensure we have all logs
++    if let Some(handle) = stderr_handle
++        && let Err(e) = handle.join()
++    {
++        log::error!("Stderr reading thread panicked: {:?}", e);
++    }
++    if let Some(handle) = stdout_handle
++        && let Err(e) = handle.join()
++    {
++        log::error!("Stdout reading thread panicked: {:?}", e);
++    }
++
++    if !status.success() {
++        let stderr = stderr_buffer.lock().unwrap().join("\n");
++        let stdout = stdout_buffer.lock().unwrap().join("\n");
++        bail!("Lean build failed\nSTDOUT:\n{}\nSTDERR:\n{}", stdout, stderr);
++    }
++
++    Ok(())
++}
++
++fn run_lean_diagnostics_command(
++    toolchain: &crate::setup::Toolchain,
++    lean_root: &Path,
++    specs_rel_path: &str,
++    slug: &str,
++    use_lake_lean_diagnostics: bool,
++) -> Result<std::process::Output> {
++    let mut cmd = std::process::Command::new(toolchain.lean_bin().join("lake"));
++    let start = std::time::Instant::now();
++    if use_lake_lean_diagnostics {
++        cmd.args(["--keep-toolchain", "lean", specs_rel_path, "--", "--json"]);
++    } else {
++        cmd.args(["--keep-toolchain", "env", "lean", "--json", specs_rel_path]);
++    }
++    cmd.current_dir(lean_root);
++    configure_lake_command(&mut cmd, toolchain)?;
++    cmd.stdout(Stdio::piped());
++    cmd.stderr(Stdio::piped());
++
++    let output = cmd.output().context("Failed to run lean compiler")?;
++    if use_lake_lean_diagnostics {
++        log::trace!(
++            "'lake lean -- --json' for '{}' took {:.2?}",
++            slug,
++            start.elapsed()
++        );
++    }
++    Ok(output)
++}
++
+ fn configure_lake_command(
+     cmd: &mut std::process::Command,
+     toolchain: &crate::setup::Toolchain,

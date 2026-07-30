@@ -493,6 +493,12 @@ impl LowerRequest for ExecuteRequest {
             if let Ok(rust_log) = std::env::var("RUST_LOG") {
                 envs.insert("RUST_LOG".to_owned(), rust_log);
             }
+            if std::env::var_os("PLAYGROUND_ANNEAL_LAKE_LEAN_DIAGNOSTICS").is_some() {
+                envs.insert(
+                    "PLAYGROUND_ANNEAL_LAKE_LEAN_DIAGNOSTICS".to_owned(),
+                    "1".to_owned(),
+                );
+            }
         }
 
         ExecuteCommandRequest {
