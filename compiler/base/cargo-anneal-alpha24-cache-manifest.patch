@@ -2,17 +2,38 @@ diff --git a/src/aeneas.rs b/src/aeneas.rs
 index 6fab4b2..12057f0 100644
 --- a/src/aeneas.rs
 +++ b/src/aeneas.rs
-@@ -28,6 +28,9 @@
+@@ -28,6 +28,11 @@
  use crate::{generate, resolve::LockedRoots, scanner::AnnealArtifact, setup::Tool};
  
  const ANNEAL_PRELUDE: &str = include_str!("Anneal.lean");
 +const VENDORED_AENEAS_LEAN_DIR: &str = "vendor/aeneas/backends/lean";
 +const VENDORED_AENEAS_PACKAGES_DIR: &str = "vendor/aeneas/packages";
 +const PLAYGROUND_ANNEAL_LAKE_LEAN_DIAGNOSTICS: &str = "PLAYGROUND_ANNEAL_LAKE_LEAN_DIAGNOSTICS";
++const PLAYGROUND_ANNEAL_BUILD_SPECS_SKIP_SUCCESS_DIAGNOSTICS: &str =
++    "PLAYGROUND_ANNEAL_BUILD_SPECS_SKIP_SUCCESS_DIAGNOSTICS";
  
  /// Orchestrates the Aeneas translation and Lean verification process.
  ///
-@@ -272,12 +275,12 @@
+@@ -94,6 +99,8 @@
+     .context("Failed to write Lean toolchain")?;
+ 
+     let mut lake_roots = vec!["Generated".to_string()];
++    let build_specs_skip_success_diagnostics =
++        std::env::var_os(PLAYGROUND_ANNEAL_BUILD_SPECS_SKIP_SUCCESS_DIAGNOSTICS).is_some();
+     let toolchain = crate::setup::Toolchain::resolve()?;
+ 
+     for artifact in artifacts {
+@@ -267,17 +274,22 @@
+         // the generated Lakefile, which is the standard syntax for Name literals in Lean.
+         lake_roots.push(format!("{}.Funs", slug));
+         lake_roots.push(format!("{}.Types", slug));
++        if build_specs_skip_success_diagnostics {
++            let specs_file = artifact.lean_spec_file_name();
++            let specs_module = specs_file.trim_end_matches(".lean");
++            lake_roots.push(format!("{}.{}", slug, specs_module));
++        }
+     }
+ 
      // 4. Write Lakefile
      //
      // Aeneas and its Lean dependencies are unpacked from the managed archive.
@@ -27,7 +48,7 @@ index 6fab4b2..12057f0 100644
      );
  
      let roots_str = lake_roots.iter().map(|r| format!("`{}", r)).collect::<Vec<_>>().join(", ");
-@@ -307,55 +310,222 @@
+@@ -307,53 +319,220 @@
      );
      write_if_changed(&tmp_lean_root.join("lakefile.lean"), &lakefile)
          .context("Failed to write Lakefile")?;
@@ -47,7 +68,8 @@ index 6fab4b2..12057f0 100644
 -        if old_manifest.exists() {
 -            fs::rename(&old_manifest, tmp_lean_root.join("lake-manifest.json"))?;
 -        }
--
++    sync_lean_root(&tmp_lean_root, &lean_root).context("Failed to sync Lean directory")?;
+ 
 -        // Remove the existing directory before renaming the temporary directory.
 -        // Note: `fs::rename` on Unix typically requires the target directory to be
 -        // empty if it exists. While not strictly atomic (there is a brief window
@@ -55,8 +77,7 @@ index 6fab4b2..12057f0 100644
 -        log::debug!("Removing existing lean directory: {}", lean_root.display());
 -        fs::remove_dir_all(&lean_root).context("Failed to remove existing lean directory")?;
 -    }
-+    sync_lean_root(&tmp_lean_root, &lean_root).context("Failed to sync Lean directory")?;
- 
+-
 -    log::debug!("Renaming {} to {}", tmp_lean_root.display(), lean_root.display());
 -    fs::rename(&tmp_lean_root, &lean_root)
 -        .context("Failed to rename temporary lean directory to target")?;
@@ -257,8 +278,8 @@ index 6fab4b2..12057f0 100644
 +    let src_content = fs::read(src).with_context(|| format!("Failed to read {}", src.display()))?;
 +    let dst_content = fs::read(dst).with_context(|| format!("Failed to read {}", dst.display()))?;
 +    Ok(src_content == dst_content)
- }
- 
++}
++
 +fn path_exists(path: &Path) -> bool {
 +    fs::symlink_metadata(path).is_ok()
 +}
@@ -273,12 +294,10 @@ index 6fab4b2..12057f0 100644
 +        fs::remove_file(path).with_context(|| format!("Failed to remove file {}", path.display()))?;
 +    }
 +    Ok(())
-+}
-+
+ }
+ 
  fn copy_toolchain_tree_writable(src: &Path, dst: &Path) -> Result<()> {
-     if dst.exists() {
-         fs::remove_dir_all(dst)
-@@ -562,94 +732,39 @@
+@@ -562,94 +741,58 @@
  fn run_lake(roots: &LockedRoots, artifacts: &[AnnealArtifact]) -> Result<()> {
      let generated = roots.lean_generated_root();
      let lean_root = generated.parent().unwrap();
@@ -325,7 +344,24 @@ index 6fab4b2..12057f0 100644
 -            for line in reader.lines().map_while(Result::ok) {
 -                stdout_clone.lock().unwrap().push(line);
 -                pb_clone.tick();
--            }
++    let use_lake_lean_diagnostics =
++        std::env::var_os(PLAYGROUND_ANNEAL_LAKE_LEAN_DIAGNOSTICS).is_some();
++    let build_specs_skip_success_diagnostics =
++        std::env::var_os(PLAYGROUND_ANNEAL_BUILD_SPECS_SKIP_SUCCESS_DIAGNOSTICS).is_some();
++    let mut lake_build_error = None;
++    if use_lake_lean_diagnostics {
++        log::info!(
++            "[anneal-lake-lean] skipping standalone 'lake build'; diagnostics will use 'lake --old lean -- --json'"
++        );
++    } else {
++        log::info!("Running 'lake build' in {}", lean_root.display());
++        match run_lake_build(lean_root, &toolchain) {
++            Ok(()) if build_specs_skip_success_diagnostics => {
++                log::info!(
++                    "[anneal-fast-diagnostics] successful Lake build included Specs; skipping post-build JSON diagnostics"
++                );
++                return Ok(());
+             }
 -        })
 -    });
 -
@@ -338,15 +374,16 @@ index 6fab4b2..12057f0 100644
 -        && let Err(e) = handle.join()
 -    {
 -        log::error!("Stderr reading thread panicked: {:?}", e);
-+    let use_lake_lean_diagnostics =
-+        std::env::var_os(PLAYGROUND_ANNEAL_LAKE_LEAN_DIAGNOSTICS).is_some();
-+    if use_lake_lean_diagnostics {
-+        log::info!(
-+            "[anneal-lake-lean] skipping standalone 'lake build'; diagnostics will use 'lake --old lean -- --json'"
-+        );
-+    } else {
-+        log::info!("Running 'lake build' in {}", lean_root.display());
-+        run_lake_build(lean_root, &toolchain)?;
++            Ok(()) => {}
++            Err(error) if build_specs_skip_success_diagnostics => {
++                log::warn!(
++                    "[anneal-fast-diagnostics] Lake build failed after including Specs; running JSON diagnostics"
++                );
++                log::debug!("Lake build failure before diagnostics: {error:?}");
++                lake_build_error = Some(format!("{error:#}"));
++            }
++            Err(error) => return Err(error),
++        }
      }
 -    if let Some(handle) = stdout_handle
 -        && let Err(e) = handle.join()
@@ -391,7 +428,7 @@ index 6fab4b2..12057f0 100644
  
          let output_str = String::from_utf8_lossy(&output.stdout);
          let specs_abs_path = lean_root.join(&specs_rel_path);
-@@ -737,7 +852,9 @@
+@@ -737,7 +880,9 @@
              let (file, start, end) = resolve_mapping(&diag, &mappings);
              mapper.render_raw(&file, diag.message, level, start, end, |s| eprintln!("{s}"));
          }
@@ -401,7 +438,14 @@ index 6fab4b2..12057f0 100644
  
      if has_errors {
          let cmd = if std::env::var("__ZEROCOPY_LOCAL_DEV").is_ok() {
-@@ -753,6 +870,105 @@
+@@ -750,9 +895,112 @@
+         );
+     }
+ 
++    if let Some(error) = lake_build_error {
++        bail!("Lean build failed before diagnostics:\n{error}");
++    }
++
      Ok(())
  }
  

@@ -499,6 +499,13 @@ impl LowerRequest for ExecuteRequest {
                     "1".to_owned(),
                 );
             }
+            if std::env::var_os("PLAYGROUND_ANNEAL_BUILD_SPECS_SKIP_SUCCESS_DIAGNOSTICS").is_some()
+            {
+                envs.insert(
+                    "PLAYGROUND_ANNEAL_BUILD_SPECS_SKIP_SUCCESS_DIAGNOSTICS".to_owned(),
+                    "1".to_owned(),
+                );
+            }
         }
 
         ExecuteCommandRequest {

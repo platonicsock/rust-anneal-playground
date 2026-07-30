@@ -287,6 +287,43 @@ quickly with `failed to remove output artifacts: permission denied`. That points
 at Lake's non-old build mode trying to clean artifacts under the symlinked,
 read-only prebuilt Aeneas package cache.
 
+## Build Specs / Skip Success Diagnostics Experiment
+
+Set `PLAYGROUND_ANNEAL_BUILD_SPECS_SKIP_SUCCESS_DIAGNOSTICS=1` when starting the
+backend to keep the standalone `lake build` flow while making the successful path
+avoid the separate JSON diagnostics pass.
+
+In this mode, patched `cargo-anneal` adds each generated `Specs.lean` module to
+the Lake library roots before running:
+
+```text
+lake build Generated Anneal
+```
+
+If that build succeeds, the specs have already been checked by Lean, so
+`cargo-anneal` skips the later `lake env lean --json` diagnostics command. If
+the Lake build fails, `cargo-anneal` still runs JSON diagnostics so playground
+users get source-mapped error output instead of only a raw build failure.
+
+Useful log markers:
+
+```text
+[anneal-fast-diagnostics] successful Lake build included Specs; skipping post-build JSON diagnostics
+[anneal-fast-diagnostics] Lake build failed after including Specs; running JSON diagnostics
+```
+
+Expected measurement:
+
+1. Rebuild the stable compiler image.
+2. Restart the backend with
+   `PLAYGROUND_ANNEAL_BUILD_SPECS_SKIP_SUCCESS_DIAGNOSTICS=1`,
+   `PLAYGROUND_ANNEAL_PERSISTENT_TARGET=1`, and
+   `PLAYGROUND_ANNEAL_PREWARM_STABLE=1`.
+3. Run the tiny Anneal workload twice without changing the source.
+4. Compare total runtime and `lake build` timing against the current warm
+   baseline of ~11.4-11.9s total, where ~6.2-6.5s is the post-build diagnostics
+   pass.
+
 ## Test Workload
 
 ```rust
