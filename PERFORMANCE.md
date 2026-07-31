@@ -293,7 +293,8 @@ Set `PLAYGROUND_ANNEAL_BUILD_SPECS_SKIP_SUCCESS_DIAGNOSTICS=1` when starting the
 backend to keep the standalone `lake build` flow while making the successful path
 avoid the separate JSON diagnostics pass.
 
-In this mode, patched `cargo-anneal` adds each generated `Specs.lean` module to
+In this mode, patched `cargo-anneal` normalizes each generated spec module to
+`Spec.lean` and adds it to
 the Lake library roots before running:
 
 ```text
@@ -308,8 +309,8 @@ users get source-mapped error output instead of only a raw build failure.
 Useful log markers:
 
 ```text
-[anneal-fast-diagnostics] successful Lake build included Specs; skipping post-build JSON diagnostics
-[anneal-fast-diagnostics] Lake build failed after including Specs; running JSON diagnostics
+[anneal-fast-diagnostics] successful Lake build included Spec; skipping post-build JSON diagnostics
+[anneal-fast-diagnostics] Lake build failed after including Spec; running JSON diagnostics
 ```
 
 Expected measurement:

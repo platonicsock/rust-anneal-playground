@@ -23,12 +23,21 @@ index 6fab4b2..12057f0 100644
      let toolchain = crate::setup::Toolchain::resolve()?;
  
      for artifact in artifacts {
-@@ -267,17 +274,22 @@
+@@ -267,17 +274,31 @@
          // the generated Lakefile, which is the standard syntax for Name literals in Lean.
          lake_roots.push(format!("{}.Funs", slug));
          lake_roots.push(format!("{}.Types", slug));
++        let generated_spec_path = tmp_lean_root
++            .join("generated")
++            .join(&slug)
++            .join(artifact.lean_spec_file_name());
++        let normalized_spec_path = tmp_lean_root.join("generated").join(&slug).join("Spec.lean");
++        if generated_spec_path != normalized_spec_path && generated_spec_path.exists() {
++            fs::rename(&generated_spec_path, &normalized_spec_path)
++                .context("Failed to normalize generated Lean spec file name")?;
++        }
++        let specs_file = "Spec.lean";
 +        if build_specs_skip_success_diagnostics {
-+            let specs_file = artifact.lean_spec_file_name();
 +            let specs_module = specs_file.trim_end_matches(".lean");
 +            lake_roots.push(format!("{}.{}", slug, specs_module));
 +        }
@@ -358,7 +367,7 @@ index 6fab4b2..12057f0 100644
 +        match run_lake_build(lean_root, &toolchain) {
 +            Ok(()) if build_specs_skip_success_diagnostics => {
 +                log::info!(
-+                    "[anneal-fast-diagnostics] successful Lake build included Specs; skipping post-build JSON diagnostics"
++                    "[anneal-fast-diagnostics] successful Lake build included Spec; skipping post-build JSON diagnostics"
 +                );
 +                return Ok(());
              }
@@ -377,7 +386,7 @@ index 6fab4b2..12057f0 100644
 +            Ok(()) => {}
 +            Err(error) if build_specs_skip_success_diagnostics => {
 +                log::warn!(
-+                    "[anneal-fast-diagnostics] Lake build failed after including Specs; running JSON diagnostics"
++                    "[anneal-fast-diagnostics] Lake build failed after including Spec; running JSON diagnostics"
 +                );
 +                log::debug!("Lake build failure before diagnostics: {error:?}");
 +                lake_build_error = Some(format!("{error:#}"));
@@ -406,9 +415,9 @@ index 6fab4b2..12057f0 100644
      for artifact in artifacts {
 +        let diagnostic_start = std::time::Instant::now();
          let slug = artifact.artifact_slug();
-         // The path in generated file is `generated/Slug/Specs.lean`
+         // The path in generated file is `generated/Slug/Spec.lean`
          // We construct the relative path from the Lake root (which is `target/anneal/<hash>/lean`)
-         let specs_rel_path = format!("generated/{}/{}", slug, artifact.lean_spec_file_name());
+         let specs_rel_path = format!("generated/{}/{}", slug, "Spec.lean");
  
 -        let mut cmd = std::process::Command::new(toolchain.lean_bin().join("lake"));
 -        cmd.args(["--keep-toolchain", "env", "lean", "--json", &specs_rel_path]);
