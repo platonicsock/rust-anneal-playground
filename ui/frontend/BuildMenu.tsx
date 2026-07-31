@@ -38,6 +38,9 @@ const BuildMenu: React.FC<BuildMenuProps> = (props) => {
 
   return (
     <MenuGroup title="What do you want to do?">
+      <ButtonMenuItem name="Anneal" onClick={performCargoAnneal}>
+        Runs <Code>cargo anneal verify</Code> on the code.
+      </ButtonMenuItem>
       <ButtonMenuItem name="Run" onClick={execute}>
         Build and run the code, showing the output. Equivalent to <Code>cargo run</Code>.
       </ButtonMenuItem>
@@ -63,10 +66,6 @@ const BuildMenu: React.FC<BuildMenuProps> = (props) => {
       <ButtonMenuItem name="Wasm" onClick={compileToWasm}>
         Build a WebAssembly module for web browsers, in the .WAT textual representation.
         {!wasmLikelyToWork && <WasmAside />}
-      </ButtonMenuItem>
-      {/* TODO: add more details about what this does and when it would be useful. */}
-      <ButtonMenuItem name="Anneal-Verify" onClick={performCargoAnneal}>
-        Runs cargo anneal verify on the code.
       </ButtonMenuItem>
     </MenuGroup>
   );

@@ -89,7 +89,7 @@ const Help: React.FC = () => {
 
   return (
     <section className={styles.container}>
-      <h1>The Rust Playground</h1>
+      <h1>Anneal Playground</h1>
       <Link action={navigateToIndex}>Return to the playground</Link>
 
       <LinkableSection id="about" header="About" level="h2">
